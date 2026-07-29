@@ -1,0 +1,19 @@
+# Python / FastAPI
+backend/venv/
+backend/__pycache__/
+*.pyc
+
+# Node / React
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# Secret Environment Files 
+.env
+backend/.env
+frontend/.env
+
+# Editor & System Files
+.vscode/
+.DS_Store
+Thumbs.db
