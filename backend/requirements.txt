@@ -4,4 +4,5 @@ supabase==1.0.0
 ultralytics==8.1.0
 opencv-python==4.8.0.76
 python-dotenv==1.1.1
+python-multipart==0.0.9
 numpy==1.26.4

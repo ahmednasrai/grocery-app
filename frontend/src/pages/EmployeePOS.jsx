@@ -1,21 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../services/supabaseClient';
-import { ShoppingCart, User, CheckCircle, Plus, Minus, ReceiptText } from 'lucide-react';
+import { ShoppingCart, User, CheckCircle, Plus, Minus } from 'lucide-react';
+import { createSale, fetchProducts } from '../services/api';
 
 export default function EmployeePOS() {
   const [products, setProducts] = useState([]);
-  const [cashiers, setCashiers] = useState(['مريم', 'فاطمة', 'عائشة', 'كاشير عام']);
-  const [selectedCashier, setSelectedCashier] = useState('مريم');
+  const [cashiers, setCashiers] = useState(() => {
+    const role = localStorage.getItem('user_role') || 'employee';
+    return role === 'admin' ? ['كاشير عام'] : ['مريم', 'فاطمة', 'عائشة'];
+  });
+  const [selectedCashier, setSelectedCashier] = useState(() => {
+    const role = localStorage.getItem('user_role') || 'employee';
+    return role === 'admin' ? 'كاشير عام' : 'مريم';
+  });
   const [cart, setCart] = useState([]);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [search, setSearch] = useState('');
 
-  useEffect(() => { fetchProducts(); }, []);
+  useEffect(() => { loadProducts(); }, []);
 
-  const fetchProducts = async () => {
-    const { data } = await supabase.from('products').select('*');
-    if (data) setProducts(data);
+  const loadProducts = async () => {
+    try {
+      const data = await fetchProducts();
+      setProducts(data || []);
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   const addToCart = (product) => {
@@ -48,18 +58,18 @@ export default function EmployeePOS() {
     setLoading(true);
     const total = calculateTotal();
 
-    const { error: saleError } = await supabase.from('sales').insert([
-      { cashier_name: selectedCashier, total_amount: total, created_at: new Date() }
-    ]);
-
-    if (!saleError) {
-      for (let item of cart) {
-        await supabase.from('products').update({ stock: item.stock - item.qty }).eq('id', item.id);
-      }
+    try {
+      await createSale({
+        cashier_name: selectedCashier,
+        items: cart.map(item => ({ id: item.id, qty: item.qty, price: item.price })),
+      });
       setCart([]);
       setSuccess(true);
-      fetchProducts();
+      loadProducts();
       setTimeout(() => setSuccess(false), 3000);
+    } catch (error) {
+      console.error(error);
+      alert('تعذر إتمام البيع. يرجى المحاولة مرة أخرى.');
     }
     setLoading(false);
   };

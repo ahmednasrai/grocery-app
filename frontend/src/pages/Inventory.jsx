@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { supabase } from '../services/supabaseClient';
+import { createProduct, deleteProduct, fetchProducts, scanImage } from '../services/api';
 import { 
   Plus, 
   Trash2, 
@@ -28,15 +28,19 @@ export default function Inventory() {
   const [stream, setStream] = useState(null);
 
   useEffect(() => { 
-    fetchProducts(); 
+    loadProducts(); 
     return () => {
-      stopCamera(); // إغلاق الكاميرا عند الخروج من الصفحة
+      stopCamera();
     };
   }, []);
 
-  const fetchProducts = async () => {
-    const { data } = await supabase.from('products').select('*').order('id', { ascending: true });
-    if (data) setProducts(data);
+  const loadProducts = async () => {
+    try {
+      const data = await fetchProducts();
+      setProducts((data || []).sort((a, b) => a.id - b.id));
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   // ---------------- الكاميرا ----------------
@@ -97,17 +101,16 @@ export default function Inventory() {
   };
 
   const uploadImages = async () => {
-    let imageUrls = [];
-    for (let file of selectedFiles) {
-      const fileName = `${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
-      const { data, error } = await supabase.storage.from('product-images').upload(fileName, file);
-      
-      if (!error && data) {
-        const { data: publicUrlData } = supabase.storage.from('product-images').getPublicUrl(fileName);
-        imageUrls.push(publicUrlData.publicUrl);
+    const uploadedImages = [];
+    for (const file of selectedFiles) {
+      try {
+        const result = await scanImage(file);
+        uploadedImages.push(result.detected_products?.[0]?.label || file.name);
+      } catch (error) {
+        console.error(error);
       }
     }
-    return imageUrls;
+    return uploadedImages;
   };
 
   const handleAddProduct = async (e) => {
@@ -120,16 +123,14 @@ export default function Inventory() {
       images = await uploadImages();
     }
 
-    await supabase.from('products').insert([
-      { 
-        name, 
-        price: parseFloat(price), 
-        carton_price: cartonPrice ? parseFloat(cartonPrice) : null, 
-        stock: parseInt(stock), 
-        image_url: images[0] || null,
-        ai_images: images
-      }
-    ]);
+    await createProduct({
+      name,
+      price: parseFloat(price),
+      carton_price: cartonPrice ? parseFloat(cartonPrice) : null,
+      stock: parseInt(stock, 10),
+      image_url: images[0] || null,
+      ai_images: images,
+    });
 
     setName(''); 
     setPrice(''); 
@@ -138,12 +139,12 @@ export default function Inventory() {
     setSelectedFiles([]);
     setUploading(false);
     stopCamera();
-    fetchProducts();
+    loadProducts();
   };
 
   const handleDelete = async (id) => {
-    await supabase.from('products').delete().eq('id', id);
-    fetchProducts();
+    await deleteProduct(id);
+    loadProducts();
   };
 
   return (
