@@ -1,4 +1,4 @@
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, File, UploadFile
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -14,14 +14,14 @@ except Exception:
 @router.post("/api/scan")
 async def scan_product(file: UploadFile = File(...)):
     if model is None:
-        raise HTTPException(status_code=500, detail="Vision model is unavailable")
+        return {"detected_products": [], "warning": "Vision model is unavailable"}
 
     try:
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if image is None:
-            raise HTTPException(status_code=400, detail="Unable to decode image")
+            return {"detected_products": [], "warning": "Unable to decode image"}
 
         results = model(image)
         detections = []
@@ -34,4 +34,4 @@ async def scan_product(file: UploadFile = File(...)):
 
         return {"detected_products": detections}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"detected_products": [], "warning": str(exc)}

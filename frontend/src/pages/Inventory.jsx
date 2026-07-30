@@ -102,15 +102,18 @@ export default function Inventory() {
 
   const uploadImages = async () => {
     const uploadedImages = [];
+    const failedImages = [];
+
     for (const file of selectedFiles) {
       try {
         const result = await scanImage(file);
         uploadedImages.push(result.detected_products?.[0]?.label || file.name);
       } catch (error) {
-        console.error(error);
+        failedImages.push(error.message || 'فشل رفع الصورة');
       }
     }
-    return uploadedImages;
+
+    return { images: uploadedImages, failedImages };
   };
 
   const handleAddProduct = async (e) => {
@@ -118,28 +121,43 @@ export default function Inventory() {
     if (!name || !price || !stock) return;
     setUploading(true);
 
-    let images = [];
-    if (selectedFiles.length > 0) {
-      images = await uploadImages();
+    try {
+      let images = [];
+      let warningMessage = '';
+
+      if (selectedFiles.length > 0) {
+        const scanResult = await uploadImages();
+        images = scanResult.images;
+        if (scanResult.failedImages.length > 0) {
+          warningMessage = `تمت إضافة المنتج، لكن بعض الصور لم تُرسل: ${scanResult.failedImages.join(' • ')}`;
+        }
+      }
+
+      await createProduct({
+        name,
+        price: parseFloat(price),
+        carton_price: cartonPrice ? parseFloat(cartonPrice) : null,
+        stock: parseInt(stock, 10),
+        image_url: images[0] || null,
+        ai_images: images,
+      });
+
+      setName(''); 
+      setPrice(''); 
+      setCartonPrice(''); 
+      setStock(''); 
+      setSelectedFiles([]);
+      if (warningMessage) {
+        alert(warningMessage);
+      }
+      await loadProducts();
+    } catch (error) {
+      console.error(error);
+      alert(`تعذر إضافة المنتج: ${error.message || 'يرجى المحاولة مرة أخرى'}`);
+    } finally {
+      setUploading(false);
+      stopCamera();
     }
-
-    await createProduct({
-      name,
-      price: parseFloat(price),
-      carton_price: cartonPrice ? parseFloat(cartonPrice) : null,
-      stock: parseInt(stock, 10),
-      image_url: images[0] || null,
-      ai_images: images,
-    });
-
-    setName(''); 
-    setPrice(''); 
-    setCartonPrice(''); 
-    setStock(''); 
-    setSelectedFiles([]);
-    setUploading(false);
-    stopCamera();
-    loadProducts();
   };
 
   const handleDelete = async (id) => {
