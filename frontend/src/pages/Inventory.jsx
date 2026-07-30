@@ -149,7 +149,7 @@ export default function Inventory() {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6 font-sans text-right dir-rtl" dir="rtl">
       <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2">
-        <Package className="text-blue-600" /> Rushdy Mart | إدارة المخزون
+        <Package className="text-blue-600" /> Rushdy Mart | المخزون
       </h1>
 
       {/* نموذج إضافة منتج */}
