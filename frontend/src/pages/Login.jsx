@@ -29,7 +29,7 @@ export default function Login() {
           <div className="inline-flex p-4 bg-blue-100 text-blue-600 rounded-2xl mb-2">
             <Store size={40} />
           </div>
-          <h1 className="text-2xl font-black text-slate-800">نظام الماركت الذكي</h1>
+          <h1 className="text-2xl font-black text-slate-800">Rushdy Mart</h1>
           <p className="text-slate-500 text-sm">حدد نوع الحساب لتسجيل الدخول</p>
         </div>
 

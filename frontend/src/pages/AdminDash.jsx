@@ -47,7 +47,7 @@ export default function AdminDash() {
   return (
     <div className="p-6 max-w-7xl mx-auto dir-rtl text-right" dir="rtl">
       <h1 className="text-2xl font-bold mb-6 flex items-center gap-2">
-        <TrendingUp className="text-blue-600" /> لوحة تحكم التاجر (الداشبورد)
+        <TrendingUp className="text-blue-600" /> Rushdy Mart | لوحة تحكم التاجر
       </h1>
 
       {loading ? (

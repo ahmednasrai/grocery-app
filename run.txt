@@ -1,0 +1,6 @@
+cd frontend
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+npm run dev
+
+cd backend
+uvicorn app.main:app --reload --port 8000

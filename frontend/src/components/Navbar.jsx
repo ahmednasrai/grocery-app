@@ -14,7 +14,7 @@ export default function Navbar() {
   return (
     <nav className="bg-white border-b px-6 py-3.5 flex justify-between items-center shadow-sm font-sans dir-rtl">
       <div className="flex items-center gap-2 text-xl font-black text-blue-600">
-        <Store size={26} /> سوبرماركت الذكاء الاصطناعي
+        <Store size={26} /> Rushdy Mart
       </div>
 
       <div className="flex items-center gap-2">

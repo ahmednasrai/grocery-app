@@ -87,6 +87,10 @@ export default function EmployeePOS() {
     <div className="p-4 max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 font-sans text-right dir-rtl">
       {/* قسم المنتجات والكاميرا */}
       <div className="md:col-span-2 space-y-4">
+        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-4 rounded-2xl shadow-sm">
+          <h1 className="text-xl font-black">Rushdy Mart</h1>
+          <p className="text-sm opacity-90">نظام البيع والمخزون الذكي</p>
+        </div>
         {/* اختيار الموظف والبحث */}
         <div className="bg-white p-4 rounded-2xl border shadow-sm flex flex-wrap justify-between items-center gap-4">
           <div className="flex items-center gap-2">
