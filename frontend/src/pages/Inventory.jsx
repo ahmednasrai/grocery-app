@@ -148,23 +148,20 @@ export default function Inventory() {
   };
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6 font-sans text-right dir-rtl" dir="rtl">
-      <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2">
+    <div className="p-3 sm:p-6 max-w-6xl mx-auto space-y-4 sm:space-y-6 font-sans text-right dir-rtl" dir="rtl">
+      <h1 className="text-xl sm:text-2xl font-black text-slate-800 flex items-center gap-2">
         <Package className="text-blue-600" /> Rushdy Mart | المخزون
       </h1>
 
-      {/* نموذج إضافة منتج */}
-      <form onSubmit={handleAddProduct} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <form onSubmit={handleAddProduct} className="bg-white p-4 sm:p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           <input type="text" placeholder="اسم المنتج" value={name} onChange={e => setName(e.target.value)} className="p-3 border rounded-xl bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-blue-500" required />
           <input type="number" placeholder="سعر القطعة (ج.م)" value={price} onChange={e => setPrice(e.target.value)} className="p-3 border rounded-xl bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-blue-500" required />
           <input type="number" placeholder="سعر الكرتونة (اختياري)" value={cartonPrice} onChange={e => setCartonPrice(e.target.value)} className="p-3 border rounded-xl bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
           <input type="number" placeholder="الكمية المتوفرة" value={stock} onChange={e => setStock(e.target.value)} className="p-3 border rounded-xl bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-blue-500" required />
         </div>
 
-        {/* خيارات رفع/التقاط الصور */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* خيار اختيار ملفات من الجهاز */}
           <div className="border-2 border-dashed border-slate-200 p-4 rounded-2xl flex flex-col items-center justify-center bg-slate-50 cursor-pointer hover:bg-slate-100 transition relative">
             <input 
               type="file" 
@@ -174,14 +171,13 @@ export default function Inventory() {
               id="file-upload" 
               className="hidden" 
             />
-            <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center gap-1 text-slate-500">
-              <UploadCloud size={32} className="text-blue-600" />
+            <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center gap-1 text-slate-500 text-center">
+              <UploadCloud size={28} className="text-blue-600" />
               <span className="text-sm font-bold text-slate-700">رفع صور من الجهاز</span>
               <span className="text-xs text-slate-400">PNG, JPG, WEBP</span>
             </label>
           </div>
 
-          {/* خيار فتح الكاميرا والتصوير */}
           <div className="border-2 border-dashed border-slate-200 p-4 rounded-2xl flex flex-col items-center justify-center bg-slate-50 hover:bg-slate-100 transition">
             {!isCameraOpen ? (
               <button 
@@ -189,7 +185,7 @@ export default function Inventory() {
                 onClick={startCamera} 
                 className="flex flex-col items-center gap-1 text-slate-500 w-full"
               >
-                <Camera size={32} className="text-purple-600" />
+                <Camera size={28} className="text-purple-600" />
                 <span className="text-sm font-bold text-slate-700">فتح الكاميرا والتصوير المباشر</span>
                 <span className="text-xs text-slate-400">التقط صوراً متعددة لتدريب الـ AI</span>
               </button>
@@ -206,7 +202,7 @@ export default function Inventory() {
                   </button>
                 </div>
 
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2 justify-center">
                   <button 
                     type="button" 
                     onClick={capturePhoto} 
@@ -227,13 +223,11 @@ export default function Inventory() {
           </div>
         </div>
 
-        {/* Canvas خفي للتقاط الصورة */}
         <canvas ref={canvasRef} className="hidden" />
 
-        {/* معاينة الصور المختارة والملتقطة */}
         {selectedFiles.length > 0 && (
           <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-bold text-slate-700 flex items-center gap-1">
                 <CheckCircle2 size={16} className="text-green-600" />
                 الصور الجاهزة للرفع ({selectedFiles.length})
@@ -250,11 +244,7 @@ export default function Inventory() {
             <div className="flex flex-wrap gap-2 pt-2">
               {selectedFiles.map((file, index) => (
                 <div key={index} className="relative group w-16 h-16 rounded-lg overflow-hidden border bg-white shadow-sm">
-                  <img 
-                    src={URL.createObjectURL(file)} 
-                    alt="Preview" 
-                    className="w-full h-full object-cover" 
-                  />
+                  <img src={URL.createObjectURL(file)} alt="Preview" className="w-full h-full object-cover" />
                   <button 
                     type="button" 
                     onClick={() => removeSelectedFile(index)} 
@@ -273,56 +263,81 @@ export default function Inventory() {
           disabled={uploading}
           className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold p-3.5 rounded-xl flex items-center justify-center gap-2 text-sm transition disabled:opacity-50"
         >
-          <Plus size={18} /> {uploading ? "جاري رفع الصور والتحميل..." : "إضافة المنتج للمخزن وتسجيله"}
+          <Plus size={18} /> {uploading ? 'جاري رفع الصور والتحميل...' : 'إضافة المنتج للمخزن وتسجيله'}
         </button>
       </form>
 
-      {/* جدول المنتجات */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-        <table className="w-full text-right border-collapse">
-          <thead className="bg-slate-50 text-slate-600 text-sm border-b">
-            <tr>
-              <th className="p-4">الصورة</th>
-              <th className="p-4">اسم المنتج</th>
-              <th className="p-4">سعر القطعة</th>
-              <th className="p-4">سعر الكرتونة</th>
-              <th className="p-4">الكمية</th>
-              <th className="p-4">صور التدريب</th>
-              <th className="p-4">إجراء</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y text-sm">
-            {products.map(p => (
-              <tr key={p.id} className="hover:bg-slate-50">
-                <td className="p-4">
-                  {p.image_url ? (
-                    <img src={p.image_url} alt="" className="w-12 h-12 object-cover rounded-xl border" />
-                  ) : (
-                    <ImageIcon size={28} className="text-slate-300" />
-                  )}
-                </td>
-                <td className="p-4 font-bold text-slate-800">{p.name}</td>
-                <td className="p-4 text-blue-600 font-bold">{p.price} ج.م</td>
-                <td className="p-4 text-slate-500">{p.carton_price ? `${p.carton_price} ج.م` : '-'}</td>
-                <td className="p-4">
-                  <span className={`px-3 py-1 rounded-full text-xs font-bold ${p.stock < 10 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
-                    {p.stock} قطعة
-                  </span>
-                </td>
-                <td className="p-4">
-                  <span className="text-xs font-semibold bg-purple-50 text-purple-600 px-2.5 py-1 rounded-lg">
-                    {p.ai_images ? p.ai_images.length : (p.image_url ? 1 : 0)} صور للمنتج
-                  </span>
-                </td>
-                <td className="p-4">
-                  <button onClick={() => handleDelete(p.id)} className="text-red-500 hover:bg-red-50 p-2 rounded-xl">
-                    <Trash2 size={18} />
-                  </button>
-                </td>
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full min-w-[620px] text-right border-collapse">
+            <thead className="bg-slate-50 text-slate-600 text-sm border-b">
+              <tr>
+                <th className="p-4">الصورة</th>
+                <th className="p-4">اسم المنتج</th>
+                <th className="p-4">سعر القطعة</th>
+                <th className="p-4">سعر الكرتونة</th>
+                <th className="p-4">الكمية</th>
+                <th className="p-4">صور التدريب</th>
+                <th className="p-4">إجراء</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y text-sm">
+              {products.map(p => (
+                <tr key={p.id} className="hover:bg-slate-50">
+                  <td className="p-4">
+                    {p.image_url ? (
+                      <img src={p.image_url} alt="" className="w-12 h-12 object-cover rounded-xl border" />
+                    ) : (
+                      <ImageIcon size={28} className="text-slate-300" />
+                    )}
+                  </td>
+                  <td className="p-4 font-bold text-slate-800">{p.name}</td>
+                  <td className="p-4 text-blue-600 font-bold">{p.price} ج.م</td>
+                  <td className="p-4 text-slate-500">{p.carton_price ? `${p.carton_price} ج.م` : '-'}</td>
+                  <td className="p-4">
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${p.stock < 10 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                      {p.stock} قطعة
+                    </span>
+                  </td>
+                  <td className="p-4">
+                    <span className="text-xs font-semibold bg-purple-50 text-purple-600 px-2.5 py-1 rounded-lg">
+                      {p.ai_images ? p.ai_images.length : (p.image_url ? 1 : 0)} صور للمنتج
+                    </span>
+                  </td>
+                  <td className="p-4">
+                    <button onClick={() => handleDelete(p.id)} className="text-red-500 hover:bg-red-50 p-2 rounded-xl">
+                      <Trash2 size={18} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="grid gap-3 p-3 md:hidden">
+          {products.map(p => (
+            <div key={p.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h3 className="font-bold text-slate-800">{p.name}</h3>
+                  <p className="text-sm text-slate-500">{p.price} ج.م</p>
+                </div>
+                <button onClick={() => handleDelete(p.id)} className="text-red-500 hover:bg-red-50 p-2 rounded-xl">
+                  <Trash2 size={18} />
+                </button>
+              </div>
+              <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+                <span className={`rounded-full px-2.5 py-1 font-bold ${p.stock < 10 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                  {p.stock} قطعة
+                </span>
+                <span className="rounded-lg bg-purple-50 px-2.5 py-1 font-semibold text-purple-600">
+                  {p.ai_images ? p.ai_images.length : (p.image_url ? 1 : 0)} صور
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
