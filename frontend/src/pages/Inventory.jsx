@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { createProduct, deleteProduct, fetchProducts, scanImage } from '../services/api';
+import { createProduct, deleteProduct, fetchProducts, resolveMediaUrl, scanImage } from '../services/api';
 import { 
   Plus, 
   Trash2, 
@@ -20,6 +20,7 @@ export default function Inventory() {
   const [stock, setStock] = useState('');
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
 
   // حالة التحكم بالكاميرا
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -34,12 +35,29 @@ export default function Inventory() {
     };
   }, []);
 
+  const normalizeProduct = (product) => ({
+    ...product,
+    price: product.price ?? product.unit_price ?? 0,
+    unit_price: product.unit_price ?? product.price ?? 0,
+    stock: product.stock ?? product.stock_qty ?? 0,
+    stock_qty: product.stock_qty ?? product.stock ?? 0,
+    ai_images: Array.isArray(product.ai_images)
+      ? product.ai_images
+      : (product.image_url ? [product.image_url] : []),
+  });
+
+  const getTrainingImageCount = (product) => {
+    if (Array.isArray(product.ai_images) && product.ai_images.length > 0) {
+      return product.ai_images.length;
+    }
+    return product.image_url ? 1 : 0;
+  };
+
   const loadProducts = async () => {
     try {
       const res = await fetchProducts();
-      // ضمان استقبال البيانات سواء جاءت كمصفوفة مباشرة أو بداخل data
       const list = Array.isArray(res) ? res : (res?.data || []);
-      setProducts(list.sort((a, b) => a.id - b.id));
+      setProducts(list.map(normalizeProduct).sort((a, b) => a.id - b.id));
     } catch (error) {
       console.error("خطأ في جلب المنتجات:", error);
     }
@@ -109,10 +127,14 @@ export default function Inventory() {
     for (const file of selectedFiles) {
       try {
         const result = await scanImage(file);
-        uploadedImages.push(result.detected_products?.[0]?.label || file.name);
+        if (result.image_url) {
+          uploadedImages.push(result.image_url);
+        } else {
+          failedImages.push(`${file.name}: لم يتم حفظ الصورة`);
+        }
       } catch (error) {
         console.error('Upload error:', error);
-        failedImages.push(error.message || 'فشل رفع الصورة');
+        failedImages.push(error.message || file.name);
       }
     }
 
@@ -122,6 +144,12 @@ export default function Inventory() {
   const handleAddProduct = async (e) => {
     e.preventDefault();
     if (!name || !price || !stock || loading) return;
+
+    if (selectedFiles.length === 0) {
+      alert('يجب إضافة صورة واحدة على الأقل لتدريب النظام على التعرف على هذا المنتج في الكاشير.');
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -166,17 +194,19 @@ export default function Inventory() {
   };
 
   const handleDelete = async (id) => {
-    if (!id) return;
+    if (!id || deletingId) return;
     if (!window.confirm("هل أنت تأكد من رغبتك في حذف هذا المنتج؟")) return;
 
+    setDeletingId(id);
     try {
       await deleteProduct(id);
-      // حذف من الـ State فورياً
       setProducts(prev => prev.filter(p => p.id !== id));
-      await loadProducts();
     } catch (error) {
       console.error("خطأ أثناء الحذف:", error);
       alert(`فشل حذف المنتج: ${error.message || 'حاول مرة أخرى'}`);
+      await loadProducts();
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -185,6 +215,9 @@ export default function Inventory() {
       <h1 className="text-xl sm:text-2xl font-black text-slate-800 flex items-center gap-2">
         <Package className="text-blue-600" /> Rushdy Mart | المخزون
       </h1>
+      <p className="text-sm text-slate-500">
+        أضف صوراً متعددة لكل منتج (زوايا مختلفة) — النظام يستخدمها للتعرف التلقائي في واجهة الكاشير.
+      </p>
 
       <form onSubmit={handleAddProduct} className="bg-white p-4 sm:p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
@@ -206,8 +239,8 @@ export default function Inventory() {
             />
             <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center gap-1 text-slate-500 text-center">
               <UploadCloud size={28} className="text-blue-600" />
-              <span className="text-sm font-bold text-slate-700">رفع صور من الجهاز</span>
-              <span className="text-xs text-slate-400">PNG, JPG, WEBP</span>
+              <span className="text-sm font-bold text-slate-700">رفع صور تدريب من الجهاز *</span>
+              <span className="text-xs text-slate-400">PNG, JPG, WEBP — صورة واحدة على الأقل</span>
             </label>
           </div>
 
@@ -293,10 +326,10 @@ export default function Inventory() {
 
         <button 
           type="submit" 
-          disabled={loading || !name || !price || !stock}
+          disabled={loading || !name || !price || !stock || selectedFiles.length === 0}
           className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold p-3.5 rounded-xl flex items-center justify-center gap-2 text-sm transition disabled:opacity-50"
         >
-          <Plus size={18} /> {loading ? 'جاري رفع الصور والتحميل...' : 'إضافة المنتج للمخزن وتسجيله'}
+          <Plus size={18} /> {loading ? 'جاري رفع الصور والتحميل...' : 'إضافة المنتج مع صور التدريب'}
         </button>
       </form>
 
@@ -325,7 +358,7 @@ export default function Inventory() {
                   <tr key={p.id} className="hover:bg-slate-50 transition">
                     <td className="p-4">
                       {p.image_url ? (
-                        <img src={p.image_url} alt="" className="w-12 h-12 object-cover rounded-xl border" />
+                        <img src={resolveMediaUrl(p.image_url)} alt="" className="w-12 h-12 object-cover rounded-xl border" />
                       ) : (
                         <ImageIcon size={28} className="text-slate-300" />
                       )}
@@ -340,11 +373,15 @@ export default function Inventory() {
                     </td>
                     <td className="p-4">
                       <span className="text-xs font-semibold bg-purple-50 text-purple-600 px-2.5 py-1 rounded-lg">
-                        {p.ai_images ? p.ai_images.length : (p.image_url ? 1 : 0)} صور للمنتج
+                        {getTrainingImageCount(p)} صور للمنتج
                       </span>
                     </td>
                     <td className="p-4">
-                      <button onClick={() => handleDelete(p.id)} className="text-red-500 hover:bg-red-50 p-2 rounded-xl transition">
+                      <button
+                        onClick={() => handleDelete(p.id)}
+                        disabled={deletingId === p.id}
+                        className="text-red-500 hover:bg-red-50 p-2 rounded-xl transition disabled:opacity-50"
+                      >
                         <Trash2 size={18} />
                       </button>
                     </td>
@@ -364,13 +401,17 @@ export default function Inventory() {
               <div key={p.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    {p.image_url && <img src={p.image_url} alt="" className="w-10 h-10 object-cover rounded-lg border" />}
+                    {p.image_url && <img src={resolveMediaUrl(p.image_url)} alt="" className="w-10 h-10 object-cover rounded-lg border" />}
                     <div>
                       <h3 className="font-bold text-slate-800">{p.name}</h3>
                       <p className="text-sm text-blue-600 font-bold">{(p.price ?? p.unit_price ?? 0)} ج.م</p>
                     </div>
                   </div>
-                  <button onClick={() => handleDelete(p.id)} className="text-red-500 hover:bg-red-100 p-2 rounded-xl transition">
+                  <button
+                    onClick={() => handleDelete(p.id)}
+                    disabled={deletingId === p.id}
+                    className="text-red-500 hover:bg-red-100 p-2 rounded-xl transition disabled:opacity-50"
+                  >
                     <Trash2 size={18} />
                   </button>
                 </div>
@@ -388,7 +429,7 @@ export default function Inventory() {
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="font-semibold text-slate-700">صور التدريب</span>
-                    <span>{p.ai_images ? p.ai_images.length : (p.image_url ? 1 : 0)} صور</span>
+                    <span>{getTrainingImageCount(p)} صور</span>
                   </div>
                 </div>
               </div>

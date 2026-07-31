@@ -1,11 +1,16 @@
 import os
-from supabase import create_client, Client
+
 from dotenv import load_dotenv
+from supabase import Client, create_client
 
 load_dotenv()
 
 
 def get_supabase_client() -> Client:
-    supabase_url = os.getenv("SUPABASE_URL", "https://pvcvfzslwxapryagsdzc.supabase.co")
-    supabase_key = os.getenv("SUPABASE_KEY", "sb_publishable_iV7jz3ZI8QlmBvYD8urDGw_ib70WvDN")
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY")
+
+    if not supabase_url or not supabase_key:
+        raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set in backend/.env")
+
     return create_client(supabase_url, supabase_key)

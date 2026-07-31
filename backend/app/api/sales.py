@@ -23,11 +23,24 @@ def _model_dump(model):
     return model.dict()
 
 
+def _current_stock(product_row):
+    stock_qty = product_row.get("stock_qty")
+    stock = product_row.get("stock")
+    if stock_qty is not None:
+        return int(stock_qty)
+    if stock is not None:
+        return int(stock)
+    return 0
+
+
 @router.get("/api/sales")
 def list_sales():
     supabase = get_supabase_client()
-    response = supabase.table("sales").select("*").execute()
-    return response.data
+    try:
+        response = supabase.table("sales").select("*").order("created_at", desc=True).execute()
+        return getattr(response, "data", None) or []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to fetch sales: {exc}") from exc
 
 
 @router.post("/api/sales")
@@ -36,20 +49,52 @@ def create_sale(payload: SaleCreate):
     total_amount = round(sum(item.qty * item.price for item in payload.items), 2)
 
     sale_record = {
-        "cashier_name": payload.cashier_name,
+        "employee_name": payload.cashier_name,
         "total_amount": total_amount,
-        "items": [_model_dump(item) for item in payload.items],
     }
 
-    response = supabase.table("sales").insert([sale_record]).execute()
-    if getattr(response, "data", None) is None:
-        raise HTTPException(status_code=500, detail="Unable to create sale")
+    try:
+        response = supabase.table("sales").insert([sale_record]).execute()
+        data = getattr(response, "data", None) or []
+        if not data:
+            raise HTTPException(status_code=500, detail="Unable to create sale")
 
-    for item in payload.items:
-        product_row = supabase.table("products").select("*").eq("id", item.id).execute()
-        if not getattr(product_row, "data", None):
-            continue
-        current_stock = product_row.data[0].get("stock", 0)
-        supabase.table("products").update({"stock": max(0, current_stock - item.qty)}).eq("id", item.id).execute()
+        sale_id = data[0]["id"]
 
-    return sale_record
+        sale_items = [
+            {
+                "sale_id": sale_id,
+                "product_id": item.id,
+                "quantity": item.qty,
+                "unit_price": item.price,
+            }
+            for item in payload.items
+        ]
+        supabase.table("sale_items").insert(sale_items).execute()
+
+        for item in payload.items:
+            product_row = (
+                supabase.table("products")
+                .select("stock,stock_qty")
+                .eq("id", item.id)
+                .execute()
+            )
+            rows = getattr(product_row, "data", None) or []
+            if not rows:
+                continue
+            new_stock = max(0, _current_stock(rows[0]) - item.qty)
+            supabase.table("products").update(
+                {"stock": new_stock, "stock_qty": new_stock}
+            ).eq("id", item.id).execute()
+
+        return {
+            "id": sale_id,
+            "employee_name": payload.cashier_name,
+            "cashier_name": payload.cashier_name,
+            "total_amount": total_amount,
+            "items": [_model_dump(item) for item in payload.items],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to create sale: {exc}") from exc

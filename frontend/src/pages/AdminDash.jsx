@@ -26,7 +26,7 @@ export default function AdminDash() {
     const { data: stockData, error: stockError } = await supabase
       .from('products')
       .select('*')
-      .lt('stock_qty', 10)
+      .or('stock_qty.lt.10,stock.lt.10')
 
     if (!stockError) setLowStockProducts(stockData || [])
 
@@ -117,7 +117,7 @@ export default function AdminDash() {
                     <div key={p.id} className="flex justify-between items-center bg-red-50 p-2.5 rounded-lg border border-red-100">
                       <span className="font-semibold text-gray-800">{p.name}</span>
                       <span className="bg-red-600 text-white text-xs px-2.5 py-1 rounded-full font-bold">
-                        متبقي {p.stock_qty} قطعة
+                        متبقي {p.stock_qty ?? p.stock ?? 0} قطعة
                       </span>
                     </div>
                   ))}

@@ -1,12 +1,13 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = 'https://pvcvfzslwxapryagsdzc.supabase.co'
-const supabaseAnonKey = 'sb_publishable_iV7jz3ZI8QlmBvYD8urDGw_ib70WvDN'
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.warn('Supabase env vars are missing. Admin dashboard direct queries may fail.')
+}
 
-
-
-
-
-
+export const supabase = createClient(
+  supabaseUrl || 'https://pvcvfzslwxapryagsdzc.supabase.co',
+  supabaseAnonKey || ''
+)

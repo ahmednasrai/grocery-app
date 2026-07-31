@@ -1,15 +1,18 @@
 import React, { useRef, useState } from 'react';
 import { Camera, RefreshCw, CheckCircle2 } from 'lucide-react';
+import { scanImage } from '../services/api';
 
 export default function CameraScanner({ onScanSuccess }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const streamRef = useRef(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         setIsCameraActive(true);
@@ -19,8 +22,16 @@ export default function CameraScanner({ onScanSuccess }) {
     }
   };
 
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    setIsCameraActive(false);
+  };
+
   const captureAndScan = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || loading) return;
     setLoading(true);
 
     const canvas = canvasRef.current;
@@ -29,26 +40,28 @@ export default function CameraScanner({ onScanSuccess }) {
     canvas.height = video.videoHeight;
     canvas.getContext('2d').drawImage(video, 0, 0);
 
-    canvas.toBlob(async (blob) => {
-      const formData = new FormData();
-      formData.append('file', blob, 'frame.jpg');
+    try {
+      const blob = await new Promise((resolve) => {
+        canvas.toBlob(resolve, 'image/jpeg', 0.85);
+      });
 
-      try {
-        const response = await fetch('http://localhost:8000/api/scan', {
-          method: 'POST',
-          body: formData,
-        });
-        const data = await response.json();
-        if (data.detected_products && data.detected_products.length > 0) {
-          onScanSuccess(data.detected_products);
-        } else {
-          alert("لم يتم التعرف على منتج في الصورة");
-        }
-      } catch (err) {
-        alert("فشل الاتصال بسيرفر الذكاء الاصطناعي!");
+      if (!blob) {
+        throw new Error('تعذر التقاط الصورة');
       }
+
+      const file = new File([blob], 'frame.jpg', { type: 'image/jpeg' });
+      const data = await scanImage(file);
+
+      if (data.detected_products && data.detected_products.length > 0) {
+        onScanSuccess(data.detected_products);
+      } else {
+        alert(data.warning || "لم يتم التعرف على منتج في الصورة");
+      }
+    } catch (err) {
+      alert(err.message || "فشل الاتصال بسيرفر الذكاء الاصطناعي!");
+    } finally {
       setLoading(false);
-    }, 'image/jpeg');
+    }
   };
 
   return (
@@ -65,10 +78,23 @@ export default function CameraScanner({ onScanSuccess }) {
       <canvas ref={canvasRef} className="hidden" />
 
       {isCameraActive && (
-        <button onClick={captureAndScan} disabled={loading} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2">
-          {loading ? <RefreshCw className="animate-spin" size={20} /> : <CheckCircle2 size={20} />}
-          {loading ? "جاري الفحص..." : "مسح المنتج بالذكاء الاصطناعي"}
-        </button>
+        <div className="w-full flex gap-2">
+          <button
+            onClick={captureAndScan}
+            disabled={loading}
+            className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            {loading ? <RefreshCw className="animate-spin" size={20} /> : <CheckCircle2 size={20} />}
+            {loading ? "جاري الفحص..." : "مسح المنتج بالذكاء الاصطناعي"}
+          </button>
+          <button
+            type="button"
+            onClick={stopCamera}
+            className="px-4 py-3 rounded-xl bg-slate-200 text-slate-700 font-bold"
+          >
+            إغلاق
+          </button>
+        </div>
       )}
     </div>
   );
