@@ -12,7 +12,12 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || 'Request failed');
+    throw new Error(error.detail || error.message || 'Request failed');
+  }
+
+  // التعامل مع الاستجابات الفارغة (مثل 204 No Content)
+  if (response.status === 204) {
+    return { success: true };
   }
 
   return response.json();
@@ -53,7 +58,7 @@ export async function scanImage(file) {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || 'Scan failed');
+    throw new Error(error.detail || error.message || 'Scan failed');
   }
 
   return response.json();

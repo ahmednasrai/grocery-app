@@ -16,4 +16,9 @@ frontend/.env
 # Editor & System Files
 .vscode/
 .DS_Store
-Thumbs.db
+Thumbs.dbnode_modules/ 
+.venv/ 
+.venv-1/ 
+dist/ 
+__pycache__/ 
+.env 
