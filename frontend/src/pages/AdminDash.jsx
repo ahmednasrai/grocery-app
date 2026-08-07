@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react'
 import { fetchSales, fetchProducts } from '../services/api'
-import { DollarSign, ShoppingBag, AlertTriangle, Users, TrendingUp } from 'lucide-react'
+import { DollarSign, ShoppingBag, AlertTriangle, Users, TrendingUp, Package } from 'lucide-react'
+import { availabilityText } from '../utils/units'
 
 export default function AdminDash() {
   const [sales, setSales] = useState([])
+  const [products, setProducts] = useState([])
   const [lowStockProducts, setLowStockProducts] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -20,6 +22,7 @@ export default function AdminDash() {
       const productList = Array.isArray(productsData) ? productsData : []
 
       setSales(salesList)
+      setProducts(productList.map(p => ({ ...p, stock: p.stock ?? p.stock_qty ?? 0, stock_qty: p.stock_qty ?? p.stock ?? 0 })))
 
       const lowStock = productList.filter(
         p => (p.stock_qty ?? p.stock ?? 0) < 10
@@ -83,6 +86,16 @@ export default function AdminDash() {
                 <AlertTriangle size={24} />
               </div>
             </div>
+
+            <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm border flex items-center justify-between">
+              <div>
+                <p className="text-gray-500 text-sm mb-1">إجمالي المنتجات</p>
+                <h3 className="text-xl sm:text-2xl font-bold text-slate-800">{products.length} منتج</h3>
+              </div>
+              <div className="p-3 bg-slate-100 text-slate-600 rounded-full">
+                <Package size={24} />
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-6 sm:mb-8">
@@ -116,7 +129,7 @@ export default function AdminDash() {
                     <div key={p.id} className="flex justify-between items-center bg-red-50 p-2.5 rounded-lg border border-red-100">
                       <span className="font-semibold text-gray-800">{p.name}</span>
                       <span className="bg-red-600 text-white text-xs px-2.5 py-1 rounded-full font-bold">
-                        متبقي {p.stock_qty ?? p.stock ?? 0} قطعة
+                        متبقي {availabilityText(p)}
                       </span>
                     </div>
                   ))}

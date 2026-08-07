@@ -1,20 +1,8 @@
-import json
 import logging
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-
-try:
-    from pydantic import field_validator
-except ImportError:
-    from pydantic import validator
-
-    def field_validator(*fields, **kwargs):
-        if kwargs.get("mode") == "before":
-            kwargs.pop("mode")
-            kwargs["pre"] = True
-        return validator(*fields, **kwargs)
 
 from app.api.deps import get_current_profile, require_permission
 from app.core.config import UPLOAD_DIR
@@ -23,22 +11,19 @@ from app.core.database import get_supabase_client
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+UNIT_TYPES = ("piece", "kg", "liter", "carton", "sack")
 
-def _safe_json_list(value):
-    if value is None or value == "":
-        return []
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str):
-        value = value.strip()
-        if value == "":
-            return []
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, list) else []
-        except json.JSONDecodeError:
-            return []
-    return []
+UNIT_LABELS = {
+    "piece": "قطعة",
+    "kg": "كيلو",
+    "liter": "لتر",
+    "carton": "كرتونة",
+    "sack": "شكارة",
+}
+
+
+def _unit_label(unit_type: str) -> str:
+    return UNIT_LABELS.get(unit_type or "piece", "")
 
 
 def _normalize_product(row):
@@ -59,39 +44,71 @@ def _normalize_product(row):
     elif stock_qty is None and stock is not None:
         product["stock_qty"] = stock
 
-    product["ai_images"] = _safe_json_list(product.get("ai_images"))
     product["price"] = product.get("price") or 0
     product["unit_price"] = product.get("unit_price") or product["price"]
     product["stock"] = product.get("stock") if product.get("stock") is not None else 0
     product["stock_qty"] = product.get("stock_qty") if product.get("stock_qty") is not None else product["stock"]
+
+    unit_type = (product.get("sell_type") or "piece").strip().lower()
+    if unit_type not in UNIT_TYPES:
+        unit_type = "piece"
+    product["unit_type"] = unit_type
+    product["unit_label"] = UNIT_LABELS[unit_type]
+
+    product["pieces_per_carton"] = (
+        int(product["units_per_carton"])
+        if unit_type == "carton" and product.get("units_per_carton") is not None
+        else None
+    )
+    product["kg_per_sack"] = (
+        float(product["kg_per_sack"])
+        if unit_type == "sack" and product.get("kg_per_sack") is not None
+        else None
+    )
+
+    base_price = float(product.get("price") or 0)
+
+    # Derived container prices, always from the stored base price:
+    #   carton: price per box   = base price x pieces per box
+    #   sack:   price per sack  = base price x kg per sack
+    # The optional carton_price column is honored only when explicitly > 0.
+    if unit_type == "carton" and product.get("pieces_per_carton"):
+        stored_carton = product.get("carton_price")
+        product["carton_price"] = (
+            float(stored_carton)
+            if stored_carton is not None and float(stored_carton) > 0
+            else round(base_price * product["pieces_per_carton"], 2)
+        )
+    elif unit_type == "sack" and product.get("kg_per_sack"):
+        product["sack_price"] = round(base_price * product["kg_per_sack"], 2)
+
     return product
 
 
 class ProductCreate(BaseModel):
     name: str = Field(min_length=1)
+    unit_type: str = "piece"
     price: float | None = None
     unit_price: float | None = None
     carton_price: float | None = None
     stock: int | None = None
     stock_qty: int | None = None
+    pieces_per_carton: int | None = None
+    kg_per_sack: float | None = None
     image_url: str | None = None
-    ai_images: list[str] | str | None = None
-
-    @field_validator("ai_images", mode="before")
-    @classmethod
-    def validate_ai_images(cls, value):
-        return _safe_json_list(value)
 
 
 class ProductUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1)
+    unit_type: str | None = None
     price: float | None = None
     unit_price: float | None = None
     carton_price: float | None = None
     stock: int | None = None
     stock_qty: int | None = None
+    pieces_per_carton: int | None = None
+    kg_per_sack: float | None = None
     image_url: str | None = None
-    ai_images: list[str] | str | None = None
 
 
 def _model_dump(model):
@@ -100,49 +117,112 @@ def _model_dump(model):
     return model.dict(exclude_none=True)
 
 
+def _validate_unit_fields(unit_type: str, pieces_per_carton, kg_per_sack):
+    unit_type = (unit_type or "piece").strip().lower()
+    if unit_type not in UNIT_TYPES:
+        raise HTTPException(status_code=422, detail=f"Invalid unit_type '{unit_type}'. Must be one of: {', '.join(UNIT_TYPES)}")
+
+    if unit_type == "carton":
+        if pieces_per_carton is None:
+            raise HTTPException(status_code=422, detail="unit_type 'carton' requires pieces_per_carton > 0")
+        pieces = int(pieces_per_carton)
+        if pieces <= 0:
+            raise HTTPException(status_code=422, detail="pieces_per_carton must be > 0")
+        return unit_type, pieces, None
+
+    if unit_type == "sack":
+        if kg_per_sack is None:
+            raise HTTPException(status_code=422, detail="unit_type 'sack' requires kg_per_sack > 0")
+        kg = float(kg_per_sack)
+        if kg <= 0:
+            raise HTTPException(status_code=422, detail="kg_per_sack must be > 0")
+        if kg != int(kg):
+            raise HTTPException(status_code=422, detail="kg_per_sack must be a whole number (e.g. 25)")
+        return unit_type, None, int(kg)
+
+    return unit_type, None, None
+
+
 def _prepare_product_payload(payload):
     data = _model_dump(payload)
-    data["ai_images"] = _safe_json_list(data.get("ai_images"))
+
+    unit_type = (data.get("unit_type") or "piece").strip().lower()
+    _valid_unit, pieces, kg = _validate_unit_fields(
+        unit_type, data.get("pieces_per_carton"), data.get("kg_per_sack")
+    )
+    data["unit_type"] = unit_type
 
     price = data.get("price") if data.get("price") is not None else data.get("unit_price")
     if price is None:
         raise HTTPException(status_code=422, detail="price or unit_price is required")
-    data["price"] = float(price)
-    data["unit_price"] = float(price)
+    price = float(price)
+    if price < 0:
+        raise HTTPException(status_code=422, detail="price must be >= 0")
+    data["price"] = price
+    data["unit_price"] = price
 
     stock = data.get("stock") if data.get("stock") is not None else data.get("stock_qty")
     stock = 0 if stock is None else int(stock)
+    if stock < 0:
+        raise HTTPException(status_code=422, detail="stock must be >= 0")
     data["stock"] = stock
     data["stock_qty"] = stock
 
-    if not data.get("image_url") and data["ai_images"]:
-        data["image_url"] = data["ai_images"][0]
-
+    data["sell_type"] = unit_type
+    data["units_per_carton"] = pieces if pieces is not None else None
+    data["kg_per_sack"] = kg if kg is not None else None
+    data.pop("pieces_per_carton", None)
+    data.pop("unit_type", None)
     return data
 
 
 def _prepare_update_payload(payload: ProductUpdate) -> dict:
     data = _model_dump(payload)
-    if "ai_images" in data:
-        data["ai_images"] = _safe_json_list(data.get("ai_images"))
+
+    if "unit_type" in data:
+        unit_type = (data.get("unit_type") or "piece").strip().lower()
+        _type, pieces, kg = _validate_unit_fields(
+            unit_type, data.get("pieces_per_carton"), data.get("kg_per_sack")
+        )
+        data["sell_type"] = unit_type
+        data["units_per_carton"] = pieces if pieces is not None else None
+        data["kg_per_sack"] = kg if kg is not None else None
+    elif "pieces_per_carton" in data or "kg_per_sack" in data:
+        raise HTTPException(status_code=422, detail="unit_type is required when changing piece/kg fields")
 
     price = data.get("price") if data.get("price") is not None else data.get("unit_price")
     unit_price = data.get("unit_price") if data.get("unit_price") is not None else data.get("price")
 
     if price is not None:
-        data["price"] = float(price)
+        price = float(price)
+        if price < 0:
+            raise HTTPException(status_code=422, detail="price must be >= 0")
+        data["price"] = price
     if unit_price is not None:
-        data["unit_price"] = float(unit_price)
+        unit_price = float(unit_price)
+        if unit_price < 0:
+            raise HTTPException(status_code=422, detail="price must be >= 0")
+        data["unit_price"] = unit_price
 
     stock = data.get("stock") if data.get("stock") is not None else data.get("stock_qty")
     if stock is not None:
-        data["stock"] = int(stock)
-        data["stock_qty"] = int(stock)
+        stock = int(stock)
+        if stock < 0:
+            raise HTTPException(status_code=422, detail="stock must be >= 0")
+        data["stock"] = stock
+        data["stock_qty"] = stock
 
-    if not data.get("image_url") and data.get("ai_images"):
-        data["image_url"] = data["ai_images"][0]
+    unit_cols = {}
+    if "sell_type" in data:
+        unit_cols["units_per_carton"] = data.pop("units_per_carton", None)
+        unit_cols["kg_per_sack"] = data.pop("kg_per_sack", None)
 
-    return {k: v for k, v in data.items() if v is not None}
+    for legacy in ("unit_type", "pieces_per_carton"):
+        data.pop(legacy, None)
+
+    data = {k: v for k, v in data.items() if v is not None}
+    data.update({k: v for k, v in unit_cols.items()})
+    return data
 
 
 @router.get("/api/products")

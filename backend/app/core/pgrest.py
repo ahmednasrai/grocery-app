@@ -121,3 +121,34 @@ class SupabaseClient:
 
     def table(self, name):
         return _Table(self._base, name, self._key)
+
+    def rpc(self, name: str, params: dict | None = None):
+        """Call a PostgREST RPC function (e.g. an atomic DB transaction).
+
+        Returns the parsed JSON body. Raises RuntimeError carrying the
+        PostgREST error message on failure.
+        """
+        url = f"{self._base}/rpc/{name}"
+        headers = {
+            "apikey": self._key,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        try:
+            res = httpx.request(
+                "POST",
+                url,
+                headers=headers,
+                json=params or {},
+                timeout=30,
+            )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"RPC request failed: {exc}") from exc
+
+        if res.status_code >= 400:
+            detail = res.text[:500]
+            raise RuntimeError(f"RPC {res.status_code}: {detail}")
+
+        if not res.content:
+            return None
+        return res.json()
