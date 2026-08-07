@@ -1,18 +1,16 @@
 import React, { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Store, LayoutDashboard, PackageSearch, LogOut, Menu, X } from 'lucide-react';
+import { Store, LayoutDashboard, PackageSearch, Users as UsersIcon, LogOut, Menu, X } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export default function Navbar() {
   const navigate = useNavigate();
-  const role = localStorage.getItem('user_role') || 'cashier';
+  const { profile, hasPermission, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const handleLogout = () => {
-    localStorage.removeItem('rushdy_mart_login');
-    localStorage.removeItem('rushdy_mart_role');
-    localStorage.removeItem('rushdy_mart_password');
-    localStorage.removeItem('user_role');
+  const handleLogout = async () => {
     setMenuOpen(false);
+    await logout();
     navigate('/login');
   };
 
@@ -31,6 +29,11 @@ export default function Navbar() {
         <div className="flex items-center gap-2 text-lg sm:text-xl font-black text-blue-600">
           <Store size={22} className="sm:w-[26px] sm:h-[26px]" />
           <span>Rushdy Mart</span>
+          {profile && (
+            <span className="text-[10px] sm:text-xs font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
+              {profile.role === 'admin' ? 'مدير' : 'موظف'}
+            </span>
+          )}
         </div>
 
         <button
@@ -48,15 +51,22 @@ export default function Navbar() {
           <Store size={16} /> الكاشير (POS)
         </NavLink>
 
-        {role === 'admin' && (
-          <>
-            <NavLink to="/inventory" className={linkClass} onClick={closeMenu}>
-              <PackageSearch size={16} /> المخزون
-            </NavLink>
-            <NavLink to="/admin" className={linkClass} onClick={closeMenu}>
-              <LayoutDashboard size={16} /> الداشبورد والتقرير
-            </NavLink>
-          </>
+        {hasPermission('inventory') && (
+          <NavLink to="/inventory" className={linkClass} onClick={closeMenu}>
+            <PackageSearch size={16} /> المخزون
+          </NavLink>
+        )}
+
+        {hasPermission('reports') && (
+          <NavLink to="/admin" className={linkClass} onClick={closeMenu}>
+            <LayoutDashboard size={16} /> الداشبورد والتقرير
+          </NavLink>
+        )}
+
+        {hasPermission('users') && (
+          <NavLink to="/users" className={linkClass} onClick={closeMenu}>
+            <UsersIcon size={16} /> المستخدمون
+          </NavLink>
         )}
 
         <button

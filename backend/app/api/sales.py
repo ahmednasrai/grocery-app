@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.deps import require_permission
 from app.core.database import get_supabase_client
 
 router = APIRouter()
@@ -34,7 +35,7 @@ def _current_stock(product_row):
 
 
 @router.get("/api/sales")
-def list_sales():
+def list_sales(_profile: dict = Depends(require_permission("reports"))):
     supabase = get_supabase_client()
     try:
         response = supabase.table("sales").select("*").order("created_at", desc=True).execute()
@@ -44,7 +45,10 @@ def list_sales():
 
 
 @router.post("/api/sales")
-def create_sale(payload: SaleCreate):
+def create_sale(
+    payload: SaleCreate,
+    _profile: dict = Depends(require_permission("pos")),
+):
     supabase = get_supabase_client()
     total_amount = round(sum(item.qty * item.price for item in payload.items), 2)
 

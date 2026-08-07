@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { supabase } from '../services/supabaseClient'
+import { fetchSales, fetchProducts } from '../services/api'
 import { DollarSign, ShoppingBag, AlertTriangle, Users, TrendingUp } from 'lucide-react'
 
 export default function AdminDash() {
@@ -14,23 +14,22 @@ export default function AdminDash() {
   const fetchDashboardData = async () => {
     setLoading(true)
 
-    // 1. جلب المبيعات
-    const { data: salesData, error: salesError } = await supabase
-      .from('sales')
-      .select('*')
-      .order('created_at', { ascending: false })
+    try {
+      const [salesData, productsData] = await Promise.all([fetchSales(), fetchProducts()])
+      const salesList = Array.isArray(salesData) ? salesData : []
+      const productList = Array.isArray(productsData) ? productsData : []
 
-    if (!salesError) setSales(salesData || [])
+      setSales(salesList)
 
-    // 2. جلب المنتجات القريبة من النفاد (أقل من 10 قطع)
-    const { data: stockData, error: stockError } = await supabase
-      .from('products')
-      .select('*')
-      .or('stock_qty.lt.10,stock.lt.10')
-
-    if (!stockError) setLowStockProducts(stockData || [])
-
-    setLoading(false)
+      const lowStock = productList.filter(
+        p => (p.stock_qty ?? p.stock ?? 0) < 10
+      )
+      setLowStockProducts(lowStock)
+    } catch (error) {
+      console.error('Error loading dashboard data:', error)
+    } finally {
+      setLoading(false)
+    }
   }
 
   // حساب الحسابات التجميعية

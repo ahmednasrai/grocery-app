@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { createProduct, deleteProduct, fetchProducts, resolveMediaUrl, scanImage } from '../services/api';
+import { createProduct, deleteProduct, fetchProducts, resolveMediaUrl, uploadProductImage } from '../services/api';
 import { 
   Plus, 
   Trash2, 
@@ -126,9 +126,9 @@ export default function Inventory() {
 
     for (const file of selectedFiles) {
       try {
-        const result = await scanImage(file);
-        if (result.image_url) {
-          uploadedImages.push(result.image_url);
+        const result = await uploadProductImage(file);
+        if (result.url) {
+          uploadedImages.push(result.url);
         } else {
           failedImages.push(`${file.name}: لم يتم حفظ الصورة`);
         }
