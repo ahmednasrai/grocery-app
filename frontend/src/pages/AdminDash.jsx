@@ -4,6 +4,7 @@ import { DollarSign, ShoppingBag, AlertTriangle, Users, TrendingUp, Package, Ref
 import { availabilityText, stockStatusBadge, stockStatusTone, baseUnitLabel, unitLabel } from '../utils/units'
 import { useAuth } from '../context/AuthContext'
 import EmployeeSalesModal from '../components/EmployeeSalesModal'
+import SaleDetailsModal from '../components/SaleDetailsModal'
 
 const EMPLOYEE_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#84cc16', '#ec4899', '#64748b']
 const POLL_INTERVAL_MS = 20000
@@ -63,6 +64,7 @@ export default function AdminDash() {
   const [detailEmployee, setDetailEmployee] = useState(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [returnModal, setReturnModal] = useState(null)
+  const [detailSale, setDetailSale] = useState(null)
   const mountedRef = useRef(true)
 
   const fetchDashboardData = useCallback(async (silent = false) => {
@@ -405,7 +407,11 @@ export default function AdminDash() {
                   </thead>
                   <tbody>
                     {sales.slice(0, 10).map(s => (
-                      <tr key={s.id} className="border-b hover:bg-gray-50">
+                      <tr
+                        key={s.id}
+                        onClick={() => setDetailSale(s)}
+                        className="border-b hover:bg-indigo-50/40 cursor-pointer transition"
+                      >
                         <td className="p-3 font-bold text-gray-700">#{s.id}</td>
                         <td className="p-3">{s.employee_name}</td>
                         <td className="p-3">
@@ -424,7 +430,7 @@ export default function AdminDash() {
                           <td className="p-3">
                             {s.return_status !== 'full' ? (
                               <button
-                                onClick={() => openReturn(s)}
+                                onClick={e => { e.stopPropagation(); openReturn(s) }}
                                 disabled={returnModal !== null}
                                 className="px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 text-xs font-bold border border-blue-200 hover:bg-blue-100 transition disabled:opacity-40 flex items-center gap-1"
                               >
@@ -449,6 +455,10 @@ export default function AdminDash() {
           range={rangeFor(filter)}
           onClose={() => setDetailEmployee(null)}
         />
+      )}
+
+      {detailSale && (
+        <SaleDetailsModal sale={detailSale} onClose={() => setDetailSale(null)} />
       )}
 
       {returnModal && (
