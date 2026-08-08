@@ -5,6 +5,7 @@ import { availabilityText, stockStatusBadge, stockStatusTone, baseUnitLabel, uni
 import { useAuth } from '../context/AuthContext'
 import EmployeeSalesModal from '../components/EmployeeSalesModal'
 import SaleDetailsModal from '../components/SaleDetailsModal'
+import LowStockAlert from '../components/LowStockAlert'
 
 const EMPLOYEE_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#84cc16', '#ec4899', '#64748b']
 const POLL_INTERVAL_MS = 20000
@@ -237,6 +238,15 @@ export default function AdminDash() {
         <p className="text-center py-10 text-sm sm:text-base text-slate-400">جاري تحميل البيانات الحية...</p>
       ) : (
         <>
+          <div className="mb-6 sm:mb-8">
+            <LowStockAlert
+              lowStock={alertProducts}
+              onRefresh={() => fetchDashboardData(true)}
+              summary={`${alertProducts.length} منتج بحالة مخزون منخفض أو نافد (حسب الحد الأدنى لكل منتج)`}
+              defaultExpanded={false}
+            />
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-6 mb-6 sm:mb-8">
             <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm border flex items-center justify-between">
               <div>

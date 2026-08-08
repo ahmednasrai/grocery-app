@@ -3,6 +3,7 @@ import { ShoppingCart, User, CheckCircle, Plus, Minus, Search, AlertCircle, Imag
 import { createSale, fetchProducts, resolveMediaUrl } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { unitLabel, unitDetailText, sellOptions, availabilityText, priceFor, lineSubtotal, stockStatusBadge } from '../utils/units';
+import LowStockAlert from '../components/LowStockAlert';
 
 export default function EmployeePOS() {
   const { profile } = useAuth();
@@ -151,6 +152,8 @@ export default function EmployeePOS() {
           <h1 className="text-lg sm:text-xl font-black">Rushdy Mart</h1>
           <p className="text-sm opacity-90">واجهة البيع السريعة والعملية</p>
         </div>
+
+        <LowStockAlert defaultExpanded={false} />
 
         <div className="bg-white p-4 rounded-2xl border shadow-sm space-y-3">
           <div className="flex items-center gap-2">

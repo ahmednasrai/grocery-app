@@ -1,18 +1,3 @@
-# ---------- 1) إعداد مرة واحدة (أول تشغيل) ----------
-# 1) انسخ backend/.env.example -> backend/.env واملأ القيم الحقيقية
-# 2) انسخ frontend/.env.example -> frontend/.env واملأ القيم الحقيقية
-# 3) شغّل backend/supabase_setup.sql داخل Supabase SQL Editor
-# 4) ارفّع أول حساب مدير: update public.profiles set role='admin' where email='your@email.com';
-# 5) جهّز بايثون (مرة واحدة):
-#    python -m venv backend/venv
-#    backend/venv/Scripts/python.exe -m pip install -r backend/requirements.txt
+python -m uvicorn app.main:app --reload --port 8000
 
-# ---------- 2) تشغيل الواجهة (نافذة 1) ----------
-Set-Location frontend
-npm install
 npm run dev
-
-# ---------- 3) تشغيل الباك-اند (نافذة 2) ----------
-Set-Location backend
-.\venv\Scripts\Activate.ps1
-uvicorn app.main:app --reload --port 8000
