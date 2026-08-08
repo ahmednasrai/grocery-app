@@ -15,7 +15,8 @@ class Response:
 
 
 class _Table:
-    def __init__(self, base, name, key):
+    def __init__(self, client, base, name, key):
+        self._http = client
         self._base = base
         self._name = name
         self._key = key
@@ -50,6 +51,10 @@ class _Table:
         if isinstance(value, bool):
             value = "true" if value else "false"
         self._filters[column] = f"eq.{value}"
+        return self
+
+    def in_(self, column, values):
+        self._filters[column] = "in.(" + ",".join(str(v) for v in values) + ")"
         return self
 
     def order(self, column, desc=False):
@@ -97,7 +102,7 @@ class _Table:
         }[self._verb]
 
         try:
-            res = httpx.request(
+            res = self._http.request(
                 method,
                 url,
                 headers=headers,
@@ -126,9 +131,13 @@ class SupabaseClient:
     def __init__(self, base_url: str, key: str):
         self._base = f"{base_url.rstrip('/')}/rest/v1"
         self._key = key
+        # One shared HTTP client: connections are kept alive (TLS handshake
+        # once) and reused across requests AND across threads - a large part
+        # of dashboard latency was per-request reconnect overhead.
+        self._http = httpx.Client(timeout=30)
 
     def table(self, name):
-        return _Table(self._base, name, self._key)
+        return _Table(self._http, self._base, name, self._key)
 
     def rpc(self, name: str, params: dict | None = None):
         """Call a PostgREST RPC function (e.g. an atomic DB transaction).
@@ -143,8 +152,7 @@ class SupabaseClient:
             "Content-Type": "application/json",
         }
         try:
-            res = httpx.request(
-                "POST",
+            res = self._http.post(
                 url,
                 headers=headers,
                 json=params or {},

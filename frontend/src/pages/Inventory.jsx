@@ -95,7 +95,7 @@ export default function Inventory() {
       return Math.round(c * k);
     }
     const s = parseFloat(stock);
-    return Number.isFinite(s) ? Math.round(s) : null;
+    return Number.isFinite(s) ? s : null;
   };
 
   const isValidForSubmit = () => {
@@ -341,7 +341,12 @@ export default function Inventory() {
             <input
               type="number"
               min="0"
-              placeholder="الكمية الأساسية (قطعة/كجم/لتر) *"
+              step={unitType === 'kg' || unitType === 'liter' ? '0.01' : '1'}
+              placeholder={
+                unitType === 'kg' ? 'الكمية الأساسية بالكيلو (مثال: 9.75) *'
+                  : unitType === 'liter' ? 'الكمية الأساسية باللتر (مثال: 1.5) *'
+                  : 'الكمية الأساسية (قطعة) *'
+              }
               value={stock}
               onChange={e => setStock(e.target.value)}
               className={INPUT_CLASS}

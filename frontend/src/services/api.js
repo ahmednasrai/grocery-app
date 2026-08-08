@@ -44,54 +44,99 @@ async function parseResponse(response) {
   }
 }
 
-async function request(path, options = {}) {
-  const headers = await authHeaders(options.headers)
-  const response = await fetch(buildUrl(path), {
-    ...options,
-    headers,
-  })
+// GET deduplication: concurrent identical reads share one in-flight promise,
+// and optional short TTL caching stops the dashboard polling loop from
+// hammering the API with unchanged data every 20s.
+const inFlight = new Map() // 'GET path' -> Promise
+const memCache = new Map() // 'GET path' -> { expiresAt, value }
+const keyFor = (method, path) => `${method} ${path}`
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}))
-    const detail = error.detail;
-    const message = Array.isArray(detail)
-      ? detail.map((item) => item.msg || item.message || JSON.stringify(item)).join(', ')
-      : detail || error.message || 'Request failed'
-    throw new Error(message)
-  }
-
-  return parseResponse(response)
+function invalidateCache(path) {
+  const key = keyFor('GET', path)
+  memCache.delete(key)
+  inFlight.delete(key)
 }
 
+async function request(path, options = {}) {
+  const method = (options.method || 'GET').toUpperCase()
+  const ttl = options.cacheTtl || 0
+  const key = keyFor(method, path)
+
+  if (method === 'GET') {
+    const hit = memCache.get(key)
+    if (hit && Date.now() < hit.expiresAt) return hit.value
+    if (inFlight.has(key)) return inFlight.get(key)
+  }
+
+  const run = (async () => {
+    const headers = await authHeaders(options.headers)
+    const response = await fetch(buildUrl(path), {
+      ...options,
+      headers,
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}))
+      const detail = error.detail;
+      const message = Array.isArray(detail)
+        ? detail.map((item) => item.msg || item.message || JSON.stringify(item)).join(', ')
+        : detail || error.message || 'Request failed'
+      throw new Error(message)
+    }
+
+    const data = await parseResponse(response)
+    if (method === 'GET' && ttl > 0) {
+      memCache.set(key, { expiresAt: Date.now() + ttl, value: data })
+    }
+    return data
+  })()
+
+  if (method === 'GET') {
+    inFlight.set(key, run)
+    const release = () => { if (inFlight.get(key) === run) inFlight.delete(key) }
+    run.then(release, release)
+  }
+  return run
+}
+
+const PRODUCTS_TTL = 20000
+
 export async function fetchProducts() {
-  const data = await request('/api/products')
+  const data = await request('/api/products', { cacheTtl: PRODUCTS_TTL })
   return Array.isArray(data) ? data : (data?.data || [])
 }
 
 export async function createProduct(product) {
-  return request('/api/products', {
+  const result = await request('/api/products', {
     method: 'POST',
     body: JSON.stringify(product),
   })
+  invalidateCache('/api/products')
+  return result
 }
 
 export async function updateProduct(productId, fields) {
-  return request(`/api/products/${productId}`, {
+  const result = await request(`/api/products/${productId}`, {
     method: 'PUT',
     body: JSON.stringify(fields),
   })
+  invalidateCache('/api/products')
+  return result
 }
 
 export async function deleteProduct(productId) {
-  return request(`/api/products/${productId}`, {
+  const result = await request(`/api/products/${productId}`, {
     method: 'DELETE',
   })
+  invalidateCache('/api/products')
+  return result
 }
 
-export async function fetchSales({ from, to } = {}) {
+export async function fetchSales({ from, to, limit } = {}) {
   const params = new URLSearchParams()
   if (from) params.set('from', from)
   if (to) params.set('to', to)
+  if (limit) params.set('limit', limit)
   const qs = params.toString()
   const data = await request(`/api/sales${qs ? `?${qs}` : ''}`)
   return Array.isArray(data) ? data : (data?.data || [])
@@ -103,24 +148,30 @@ export async function fetchSaleDetail(saleId) {
 }
 
 export async function createSaleReturn(saleId, payload) {
-  return request(`/api/sales/${saleId}/return`, {
+  const result = await request(`/api/sales/${saleId}/return`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+  invalidateCache('/api/products')
+  return result
 }
 
 export async function receiveStock(productId, { qty, unit }) {
-  return request(`/api/products/${productId}/receive-stock`, {
+  const result = await request(`/api/products/${productId}/receive-stock`, {
     method: 'POST',
     body: JSON.stringify({ qty, unit }),
   })
+  invalidateCache('/api/products')
+  return result
 }
 
 export async function adjustStock(productId, { operation, qty, unit }) {
-  return request(`/api/products/${productId}/adjust-stock`, {
+  const result = await request(`/api/products/${productId}/adjust-stock`, {
     method: 'POST',
     body: JSON.stringify({ operation, qty, unit }),
   })
+  invalidateCache('/api/products')
+  return result
 }
 
 export async function fetchEmployeeSalesSummary({ from, to } = {}) {
@@ -142,10 +193,12 @@ export async function fetchEmployeeSalesDetail(employeeName, { from, to } = {}) 
 }
 
 export async function createSale(salePayload) {
-  return request('/api/sales', {
+  const result = await request('/api/sales', {
     method: 'POST',
     body: JSON.stringify(salePayload),
   })
+  invalidateCache('/api/products')
+  return result
 }
 
 export async function uploadProductImage(file) {
@@ -168,7 +221,9 @@ export async function uploadProductImage(file) {
     throw new Error(error.detail || error.message || 'Upload failed');
   }
 
-  return parseResponse(response);
+  const result = await parseResponse(response);
+  invalidateCache('/api/products');
+  return result;
 }
 
 export async function getMe() {

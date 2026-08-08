@@ -177,8 +177,18 @@ class FakeClient:
     def _to_base(self, row, unit, qty):
         pid = row["id"]
         rule = (row.get("sell_type") or "piece").strip().lower()
-        if rule in ("piece", "kg", "liter"):
+        if rule == "piece":
             if unit is not None and unit != rule:
+                raise RuntimeError('rpc failed: [{"message":"invalid_unit:%d:%s"}]' % (pid, unit))
+            return float(qty)
+        if rule in ("kg", "liter"):
+            if unit is None:
+                unit = rule
+            if rule == "kg" and unit == "g":
+                return float(qty) / 1000
+            if rule == "liter" and unit == "ml":
+                return float(qty) / 1000
+            if unit != rule:
                 raise RuntimeError('rpc failed: [{"message":"invalid_unit:%d:%s"}]' % (pid, unit))
             return float(qty)
         if rule == "carton":
@@ -306,16 +316,30 @@ class FakeClient:
                         raise RuntimeError('rpc failed: [{"message":"invalid_capacity:%d"}]' % pid)
                 elif unit != "kg":
                     raise RuntimeError('rpc failed: [{"message":"invalid_unit:%d:%s"}]' % (pid, unit))
+            elif rule == "kg":
+                if unit == "g":
+                    capacity = 0.001
+                elif unit != "kg":
+                    raise RuntimeError('rpc failed: [{"message":"invalid_unit:%d:%s"}]' % (pid, unit))
+            elif rule == "liter":
+                if unit == "ml":
+                    capacity = 0.001
+                elif unit != "liter":
+                    raise RuntimeError('rpc failed: [{"message":"invalid_unit:%d:%s"}]' % (pid, unit))
             elif unit != rule:
                 raise RuntimeError('rpc failed: [{"message":"invalid_unit:%d:%s"}]' % (pid, unit))
 
-            base_qty = round(qty * capacity)
+            qty_f = float(qty)
+            if rule in ("piece", "carton") and qty_f != int(qty_f):
+                raise RuntimeError('rpc failed: [{"message":"invalid_quantity"}]')
+
+            base_qty = round(qty_f * capacity, 4)
             unit_price = round(float(row.get("price") or 0) * capacity, 4)
-            current = int(row.get("stock_qty") if row.get("stock_qty") is not None else row.get("stock") or 0)
+            current = float(row.get("stock_qty") if row.get("stock_qty") is not None else row.get("stock") or 0)
             if base_qty > current:
-                raise RuntimeError('rpc failed: [{"message":"insufficient_stock:%d:%d"}]' % (pid, current))
-            total += round(qty * unit_price, 2)
-            prepared.append((row, pid, qty, unit, capacity, base_qty, round(unit_price, 2)))
+                raise RuntimeError('rpc failed: [{"message":"insufficient_stock:%d:%s"}]' % (pid, current))
+            total += round(qty_f * unit_price, 2)
+            prepared.append((row, pid, qty_f, unit, capacity, base_qty, round(unit_price, 2)))
 
         sale_id = len(sales_rows) + 1
         sales_rows.append(
@@ -323,7 +347,7 @@ class FakeClient:
              "returned_amount": 0, "client_request_id": request_key}
         )
         for row, pid, qty, unit, _capacity, base_qty, unit_price in prepared:
-            stock = int(row.get("stock_qty") if row.get("stock_qty") is not None else row.get("stock") or 0) - base_qty
+            stock = float(row.get("stock_qty") if row.get("stock_qty") is not None else row.get("stock") or 0) - base_qty
             row["stock_qty"] = stock
             row["stock"] = stock
             items_rows.append(
@@ -1894,3 +1918,226 @@ def test_sales_today_filter_boundary_inclusive_utc(app_client):
     body = summary.json()
     assert body["invoice_count"] == 1
     assert body["total_amount"] == 100.0
+
+
+# ---------------- Fractional quantities (grams / ml / decimals) ----------------
+
+def _create_kg_product(app_client, stock=10.0, price=40):
+    """Create a kg product (base unit: kg) via the API; returns its id."""
+    r = app_client.post(
+        "/api/products",
+        json={"name": "فرخة", "unit_type": "kg", "price": price, "stock": stock},
+        headers=_h("admin-token"),
+    )
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def _create_liter_product(app_client, stock=2.0, price=30):
+    r = app_client.post(
+        "/api/products",
+        json={"name": "لبن", "unit_type": "liter", "price": price, "stock": stock},
+        headers=_h("admin-token"),
+    )
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def test_sale_grams_kg_product_pricing_and_stock(app_client):
+    """250 g of a 40 EGP/kg product (stock 10 kg) -> 10.00 EGP, base 0.25 kg,
+    stock 9.75 kg, unit price 0.04 per gram."""
+    pid = _create_kg_product(app_client)
+    r = app_client.post(
+        "/api/sales",
+        json={"cashier_name": "مريم", "items": [{"id": pid, "qty": 250, "selling_unit": "g"}]},
+        headers=_h("employee-token"),
+    )
+    assert r.status_code == 200
+    assert r.json()["total_amount"] == 10.0
+
+    fake = app_client.app.state.fake
+    row = next(p for p in fake.tables["products"].rows if p["id"] == pid)
+    assert row["stock"] == 9.75
+    assert row["stock_qty"] == 9.75
+
+    item = fake.tables["sale_items"].rows[-1]
+    assert item["quantity"] == 250
+    assert item["base_qty"] == 0.25
+    assert item["selling_unit"] == "g"
+    assert item["unit_price"] == 0.04
+    assert item["subtotal"] == 10.0
+
+
+def test_sale_decimal_kg_equals_grams(app_client):
+    """0.25 kg and 250 g are the same transaction."""
+    pid = _create_kg_product(app_client)
+    r = app_client.post(
+        "/api/sales",
+        json={"cashier_name": "مريم", "items": [{"id": pid, "qty": 0.25, "selling_unit": "kg"}]},
+        headers=_h("employee-token"),
+    )
+    assert r.status_code == 200
+    assert r.json()["total_amount"] == 10.0
+    fake = app_client.app.state.fake
+    row = next(p for p in fake.tables["products"].rows if p["id"] == pid)
+    assert row["stock"] == 9.75
+
+
+def test_sale_grams_exact_full_stock_zero(app_client):
+    pid = _create_kg_product(app_client, stock=10.0)
+    r = app_client.post(
+        "/api/sales",
+        json={"cashier_name": "مريم", "items": [{"id": pid, "qty": 10000, "selling_unit": "g"}]},
+        headers=_h("employee-token"),
+    )
+    assert r.status_code == 200
+    fake = app_client.app.state.fake
+    row = next(p for p in fake.tables["products"].rows if p["id"] == pid)
+    assert row["stock"] == 0
+
+
+def test_sale_grams_insufficient_409_atomic(app_client):
+    pid = _create_kg_product(app_client, stock=0.5)
+    fake = app_client.app.state.fake
+    r = app_client.post(
+        "/api/sales",
+        json={"cashier_name": "مريم", "items": [{"id": pid, "qty": 600, "selling_unit": "g"}]},
+        headers=_h("employee-token"),
+    )
+    assert r.status_code == 409
+    assert "0.5" in r.json()["detail"]  # available printed as kg, no decimals lost
+    assert fake.tables["sales"].rows == []
+    assert fake.tables["sale_items"].rows == []
+    row = next(p for p in fake.tables["products"].rows if p["id"] == pid)
+    assert row["stock"] == 0.5  # untouched
+
+
+def test_sale_ml_liter_product(app_client):
+    """250 ml of a 30 EGP/L product (stock 2 L) -> 7.50 EGP, base 0.25 L."""
+    pid = _create_liter_product(app_client)
+    r = app_client.post(
+        "/api/sales",
+        json={"cashier_name": "مريم", "items": [{"id": pid, "qty": 250, "selling_unit": "ml"}]},
+        headers=_h("employee-token"),
+    )
+    assert r.status_code == 200
+    assert r.json()["total_amount"] == 7.5
+    fake = app_client.app.state.fake
+    row = next(p for p in fake.tables["products"].rows if p["id"] == pid)
+    assert row["stock"] == 1.75
+    item = fake.tables["sale_items"].rows[-1]
+    assert item["base_qty"] == 0.25
+    assert item["unit_price"] == 0.03
+
+
+def test_sale_grams_invalid_for_piece_product(app_client):
+    r = app_client.post(
+        "/api/sales",
+        json={"cashier_name": "مريم", "items": [{"id": 1, "qty": 250, "selling_unit": "g"}]},
+        headers=_h("employee-token"),
+    )
+    assert r.status_code == 400
+
+
+def test_sale_fractional_quantity_rejected_for_piece(app_client):
+    """Whole-only units (piece/carton) must reject 1.5 pieces."""
+    r = app_client.post(
+        "/api/sales",
+        json={"cashier_name": "مريم", "items": [{"id": 1, "qty": 1.5, "selling_unit": "piece"}]},
+        headers=_h("employee-token"),
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"] == "الكمية غير صحيحة"
+
+
+def test_sale_decimal_grams_displayed_as_fractional_units_summary(app_client):
+    """Employee summary 'units_sold' counts base units: 250 g -> 0.25 kg."""
+    pid = _create_kg_product(app_client)
+    app_client.post(
+        "/api/sales",
+        json={"cashier_name": "مريم", "items": [{"id": pid, "qty": 250, "selling_unit": "g"}]},
+        headers=_h("employee-token"),
+    )
+    body = app_client.get("/api/sales/employee-summary", headers=_h("admin-token")).json()
+    assert body["units_sold"] == 0.25
+    by_name = {e["name"]: e for e in body["employees"]}
+    assert by_name["مريم"]["units_sold"] == 0.25
+
+
+def test_return_fractional_grams_restores_stock(app_client):
+    """Return 125 g of a 250 g sale: stock 9.75 -> 9.875 kg, refund 5.00 EGP."""
+    pid = _create_kg_product(app_client)
+    sale_id = app_client.post(
+        "/api/sales",
+        json={"cashier_name": "مريم", "items": [{"id": pid, "qty": 250, "selling_unit": "g"}]},
+        headers=_h("employee-token"),
+    ).json()["id"]
+    detail = app_client.get(f"/api/sales/{sale_id}", headers=_h("admin-token")).json()
+    item_id = detail["items"][0]["id"]
+
+    r = app_client.post(
+        f"/api/sales/{sale_id}/return",
+        json={"items": [{"sale_item_id": item_id, "qty": 125, "unit": "g"}]},
+        headers=_h("admin-token"),
+    )
+    assert r.status_code == 200
+    assert r.json()["returned_amount"] == 5.0
+
+    fake = app_client.app.state.fake
+    row = next(p for p in fake.tables["products"].rows if p["id"] == pid)
+    assert row["stock"] == 9.875
+    ret_item = fake.tables["return_items"].rows[-1]
+    assert ret_item["base_qty"] == 0.125
+
+
+def test_return_decimal_kg_restores_stock(app_client):
+    pid = _create_kg_product(app_client)
+    sale_id = app_client.post(
+        "/api/sales",
+        json={"cashier_name": "مريم", "items": [{"id": pid, "qty": 1, "selling_unit": "kg"}]},
+        headers=_h("employee-token"),
+    ).json()["id"]
+    detail = app_client.get(f"/api/sales/{sale_id}", headers=_h("admin-token")).json()
+    item_id = detail["items"][0]["id"]
+    r = app_client.post(
+        f"/api/sales/{sale_id}/return",
+        json={"items": [{"sale_item_id": item_id, "qty": 0.25, "unit": "kg"}]},
+        headers=_h("admin-token"),
+    )
+    assert r.status_code == 200
+    assert r.json()["returned_amount"] == 10.0
+    fake = app_client.app.state.fake
+    row = next(p for p in fake.tables["products"].rows if p["id"] == pid)
+    assert row["stock"] == 9.25
+
+
+def test_receive_and_adjust_stock_in_grams(app_client):
+    """receive_stock/adjust_stock accept grams via the shared conversion."""
+    pid = _create_kg_product(app_client, stock=1.0)
+    r = app_client.post(
+        f"/api/products/{pid}/receive-stock",
+        json={"qty": 500, "unit": "g"},
+        headers=_h("admin-token"),
+    )
+    assert r.status_code == 200
+    assert r.json()["stock"] == 1.5
+
+    r = app_client.post(
+        f"/api/products/{pid}/adjust-stock",
+        json={"operation": "subtract", "qty": 250, "unit": "g"},
+        headers=_h("admin-token"),
+    )
+    assert r.status_code == 200
+    assert r.json()["stock"] == 1.25
+
+
+def test_create_product_with_fractional_stock(app_client):
+    """kg/liter products can be created with decimal base stock."""
+    r = app_client.post(
+        "/api/products",
+        json={"name": "عسل", "unit_type": "kg", "price": 150, "stock": 9.75},
+        headers=_h("admin-token"),
+    )
+    assert r.status_code == 201
+    assert r.json()["stock"] == 9.75
+    assert r.json()["stock_qty"] == 9.75

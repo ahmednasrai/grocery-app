@@ -1,6 +1,7 @@
 import json
 import logging
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,9 +19,19 @@ INVALID_QUANTITY = "invalid_quantity"
 RETURN_EXCEEDS_PREFIX = "return_exceeds:"
 
 
+def _parallel(calls: list[tuple[str, callable]]) -> dict:
+    """Run independent PostgREST reads concurrently. The shared httpx client
+    is thread-safe, and the live backend connects with keep-alive, so the
+    wall time of a dashboard endpoint becomes ~the slowest query instead of
+    the sum of all sequential round trips."""
+    with ThreadPoolExecutor(max_workers=len(calls)) as executor:
+        futures = {name: executor.submit(fn) for name, fn in calls}
+        return {name: fut.result() for name, fut in futures.items()}
+
+
 class SaleItem(BaseModel):
     id: int
-    qty: int = Field(gt=0)
+    qty: float = Field(gt=0)
     price: float | None = None
     selling_unit: str | None = None
 
@@ -84,13 +95,24 @@ def _is_schema_missing(exc: Exception) -> bool:
     )
 
 
+_schema_cache: dict[str, tuple[bool, bool] | None] = {}
+
+
 def _schema_flags(supabase) -> tuple[bool, bool]:
     """Probe THIS database for the Returns v2 schema pieces.
     Live DB has NOT run migration 008 yet, so `returned_amount` and the
     `returns`/`return_items` tables may be absent - analytics must degrade
     gracefully in that case instead of returning 500 / zeros.
     Once 008 is applied, both probes succeed and the full paths activate
-    automatically (no code change needed)."""
+    automatically (no code change needed).
+
+    The result is cached per Supabase project (real clients carry `_base`;
+    test fakes don't, so tests always re-probe and stay deterministic).
+    """
+    base = getattr(supabase, "_base", None)
+    if base is not None and _schema_cache.get(base) is not None:
+        return _schema_cache[base]
+
     has_amount = True
     has_returns = True
     try:
@@ -105,35 +127,65 @@ def _schema_flags(supabase) -> tuple[bool, bool]:
         if not _is_schema_missing(exc):
             raise
         has_returns = False
+    if base is not None:
+        _schema_cache[base] = (has_amount, has_returns)
     return has_amount, has_returns
 
 
 def _available_qty(message: str):
-    """Parse 'insufficient_stock:<pid>:<available>' -> (product_id, available)."""
+    """Parse 'insufficient_stock:<pid>:<available>' -> (product_id, available).
+    Available may be fractional (kg/liter base stock)."""
     try:
         _, pid, available = message.split(":", 2)
-        return int(pid), int(float(available))
+        return int(pid), float(available)
     except (ValueError, TypeError):
         return None, None
+
+
+def _fmt_qty(value) -> str:
+    """Whole numbers print without decimals (5, not 5.0)."""
+    try:
+        number = float(value)
+        return str(int(number)) if number.is_integer() else f"{number:g}"
+    except (ValueError, TypeError):
+        return "؟"
 
 
 @router.get("/api/sales")
 def list_sales(
     from_date: str | None = Query(default=None, alias="from"),
     to_date: str | None = Query(default=None, alias="to"),
+    limit: int | None = Query(default=None, ge=1, le=200),
     _profile: dict = Depends(require_permission("reports")),
 ):
     supabase = get_supabase_client()
     from_date = _parse_date(from_date, "from")
     to_date = _parse_date(to_date, "to")
     try:
-        response = supabase.table("sales").select("*").order("created_at", desc=True).execute()
-        sales_rows = getattr(response, "data", None) or []
+        has_amount, has_returns = _schema_flags(supabase)
+        sales_task = lambda: supabase.table("sales").select("*").order("created_at", desc=True).execute()
+        if limit is not None:
+            # Server-side cap: the dashboard shows only the newest N invoices.
+            # Safe to apply unconditionally for the unlimited ('all') view
+            # because the newest N rows ARE the ones the frontend slices to.
+            # When date filters are present the frontend omits `limit`, so
+            # period views keep fetching their full (small) window.
+            sales_task = lambda: supabase.table("sales").select("*").order("created_at", desc=True).limit(limit).execute()
+        tasks = [
+            ("sales", sales_task),
+            ("sale_items", lambda: supabase.table("sale_items").select("sale_id,base_qty").execute()),
+        ]
+        if has_returns:
+            tasks += [
+                ("returns", lambda: supabase.table("returns").select("id,sale_id").execute()),
+                ("return_items", lambda: supabase.table("return_items").select("return_id,base_qty").execute()),
+            ]
+        fetched = _parallel(tasks)
+        sales_rows = getattr(fetched["sales"], "data", None) or []
         if from_date is not None or to_date is not None:
             sales_rows = [s for s in sales_rows if _within_range(s, from_date, to_date)]
-        has_amount, has_returns = _schema_flags(supabase)
-        returned_by_sale = _load_return_map(supabase) if has_returns else {}
-        sold_by_sale = _load_sold_base(supabase)
+        sold_by_sale = _sold_base_map(fetched["sale_items"])
+        returned_by_sale = _return_map_from_row(fetched.get("returns"), fetched.get("return_items")) if has_returns else {}
         for sale in sales_rows:
             sale_id = sale["id"]
             returned = returned_by_sale.get(sale_id, 0.0)
@@ -152,51 +204,43 @@ def list_sales(
         raise HTTPException(status_code=500, detail="Unable to fetch sales") from exc
 
 
+def _sold_base_map(resp) -> dict[int, float]:
+    """sale_id -> total sold base qty (for full/partial return detection)."""
+    sold: dict[int, float] = defaultdict(float)
+    for item in getattr(resp, "data", None) or []:
+        sale_id = item.get("sale_id")
+        if sale_id is not None:
+            sold[sale_id] += float(item.get("base_qty") or item.get("quantity") or 0)
+    return sold
+
+
+def _return_map_from_row(returns_resp, items_resp) -> dict[int, float]:
+    """sale_id -> returned base qty, from already-fetched rows (no extra queries)."""
+    returned_by_sale: dict[int, float] = defaultdict(float)
+    returns_rows = getattr(returns_resp, "data", None) or []
+    items_rows = getattr(items_resp, "data", None) or []
+    return_of = {r["id"]: r.get("sale_id") for r in returns_rows if r.get("id") is not None}
+    for item in items_rows:
+        sale_id = return_of.get(item.get("return_id"))
+        if sale_id is not None:
+            returned_by_sale[sale_id] += float(item.get("base_qty") or 0)
+    return returned_by_sale
+
+
 def _load_return_map(supabase):
     """Map sale_id -> returned base qty, from the real returns data (no joins,
     tables are small; python-side grouping mirrors the employee-summary code).
     Only PGRST schema-missing errors degrade to {}; any other failure raises
     so real bugs are never hidden."""
-    returned_by_sale: dict[int, float] = defaultdict(float)
     try:
         returns_resp = supabase.table("returns").select("id,sale_id").execute()
         items_resp = supabase.table("return_items").select("return_id,base_qty").execute()
-        returns_rows = getattr(returns_resp, "data", None) or []
-        items_rows = getattr(items_resp, "data", None) or []
-        return_of = {r["id"]: r.get("sale_id") for r in returns_rows if r.get("id") is not None}
-        for item in items_rows:
-            sale_id = return_of.get(item.get("return_id"))
-            if sale_id is not None:
-                returned_by_sale[sale_id] += float(item.get("base_qty") or 0)
+        return _return_map_from_row(returns_resp, items_resp)
     except Exception as exc:
         if not _is_schema_missing(exc):
             raise
         logger.warning("Return summary skipped (returns tables not present yet): %s", exc)
-    return returned_by_sale
-
-
-def _load_sold_base(supabase) -> dict[int, float]:
-    """sale_id -> total sold base qty (for full/partial return detection)."""
-    sold: dict[int, float] = defaultdict(float)
-    try:
-        resp = supabase.table("sale_items").select("sale_id,base_qty").execute()
-        for item in getattr(resp, "data", None) or []:
-            sale_id = item.get("sale_id")
-            if sale_id is not None:
-                sold[sale_id] += float(item.get("base_qty") or item.get("quantity") or 0)
-    except Exception as exc:
-        logger.warning("Sold-base summary unavailable: %s", exc)
-    return sold
-
-
-def _return_status_for(sale_id: int, supabase) -> tuple[str, float]:
-    returned = (_load_return_map(supabase) or {}).get(sale_id, 0.0)
-    sold = (_load_sold_base(supabase) or {}).get(sale_id, 0.0)
-    if returned <= 0:
-        return "none", 0
-    if sold > 0 and returned >= sold:
-        return "full", returned
-    return "partial", returned
+    return {}
 
 
 def _parse_date(value: str | None, name: str):
@@ -238,10 +282,13 @@ def _within_range(row: dict, from_date, to_date):
 
 
 def _units_of(item):
+    """Sold quantity in BASE units (may be fractional for kg/liter).
+    Whole values stay integers so summaries don't show 5.0."""
     base = item.get("base_qty")
-    if base is not None:
-        return int(base)
-    return int(item.get("quantity") or 0)
+    if base is None:
+        base = item.get("quantity") or 0
+    value = float(base)
+    return int(value) if value.is_integer() else round(value, 4)
 
 
 @router.get("/api/sales/employee-summary")
@@ -264,25 +311,17 @@ def employee_sales_summary(
         columns = "id,employee_name,total_amount,created_at"
         if has_amount:
             columns += ",returned_amount"
-        response = (
-            supabase.table("sales")
-            .select(columns)
-            .order("created_at", desc=True)
-            .execute()
+        fetched = _parallel(
+            [
+                ("sales", lambda: supabase.table("sales").select(columns).order("created_at", desc=True).execute()),
+                ("items", lambda: supabase.table("sale_items").select("sale_id,quantity,base_qty").execute()),
+            ]
         )
-        sales_rows = getattr(response, "data", None) or []
+        sales_rows = getattr(fetched["sales"], "data", None) or []
         sales_rows = [s for s in sales_rows if _within_range(s, from_date, to_date)]
 
-        sale_ids = [s["id"] for s in sales_rows]
-        items_rows = []
-        if sale_ids:
-            items_response = (
-                supabase.table("sale_items")
-                .select("sale_id,quantity,base_qty")
-                .execute()
-            )
-            sale_id_set = set(sale_ids)
-            items_rows = [i for i in (getattr(items_response, "data", None) or []) if i.get("sale_id") in sale_id_set]
+        sale_ids = set(s["id"] for s in sales_rows)
+        items_rows = [i for i in (getattr(fetched["items"], "data", None) or []) if i.get("sale_id") in sale_ids]
     except HTTPException:
         raise
     except Exception as exc:
@@ -347,29 +386,19 @@ def employee_sales_detail(
         columns = "id,employee_name,total_amount,created_at"
         if has_amount:
             columns += ",returned_amount"
-        response = (
-            supabase.table("sales")
-            .select(columns)
-            .eq("employee_name", employee_name)
-            .order("created_at", desc=True)
-            .execute()
+        fetched = _parallel(
+            [
+                ("sales", lambda: supabase.table("sales").select(columns).eq("employee_name", employee_name).order("created_at", desc=True).execute()),
+                ("items", lambda: supabase.table("sale_items").select("sale_id,product_id,quantity,unit_price,subtotal,selling_unit,base_qty").execute()),
+                ("products", lambda: supabase.table("products").select("id,name").execute()),
+            ]
         )
-        sales_rows = getattr(response, "data", None) or []
+        sales_rows = getattr(fetched["sales"], "data", None) or []
         sales_rows = [s for s in sales_rows if _within_range(s, from_date, to_date)]
 
-        sale_ids = [s["id"] for s in sales_rows]
-        items_rows = []
-        products_map = {}
-        if sale_ids:
-            items_response = (
-                supabase.table("sale_items")
-                .select("sale_id,product_id,quantity,unit_price,subtotal,selling_unit,base_qty")
-                .execute()
-            )
-            sale_id_set = set(sale_ids)
-            items_rows = [i for i in (getattr(items_response, "data", None) or []) if i.get("sale_id") in sale_id_set]
-            products_response = supabase.table("products").select("id,name").execute()
-            products_map = {p["id"]: p.get("name") for p in (getattr(products_response, "data", None) or [])}
+        sale_ids = set(s["id"] for s in sales_rows)
+        items_rows = [i for i in (getattr(fetched["items"], "data", None) or []) if i.get("sale_id") in sale_ids]
+        products_map = {p["id"]: p.get("name") for p in (getattr(fetched["products"], "data", None) or [])}
     except HTTPException:
         raise
     except Exception as exc:
@@ -457,7 +486,7 @@ def create_sale(
 
         if message.startswith(INSUFFICIENT_PREFIX):
             _, available = _available_qty(message)
-            detail = f"الكمية المطلوبة غير متوفرة. المتاح: {available if available is not None else '؟'}"
+            detail = f"الكمية المطلوبة غير متوفرة. المتاح: {_fmt_qty(available) if available is not None else '؟'}"
             raise HTTPException(status_code=409, detail=detail) from exc
         if message.startswith(PRODUCT_NOT_FOUND_PREFIX):
             raise HTTPException(status_code=404, detail="منتج غير موجود") from exc
@@ -495,22 +524,6 @@ def create_sale(
 # ---------------------------------------------------------------------------
 # Returns (إرجاع المبيعات واستعادة المخزون) - one atomic RPC, full+partial
 # ---------------------------------------------------------------------------
-
-def _load_return_by_item(supabase) -> dict[int, float]:
-    """sale_item_id -> total already-returned base qty."""
-    returned: dict[int, float] = defaultdict(float)
-    try:
-        resp = supabase.table("return_items").select("sale_item_id,base_qty").execute()
-        for item in getattr(resp, "data", None) or []:
-            item_id = item.get("sale_item_id")
-            if item_id is not None:
-                returned[item_id] += float(item.get("base_qty") or 0)
-    except Exception as exc:
-        if not _is_schema_missing(exc):
-            raise
-        logger.warning("Returned-by-item summary skipped (returns tables not present yet): %s", exc)
-    return returned
-
 
 def _map_return_error(exc: Exception):
     message = _extract_error_message(exc)
@@ -552,28 +565,39 @@ def get_sale_detail(
     supabase = get_supabase_client()
     try:
         has_amount, has_returns = _schema_flags(supabase)
-        sale_response = supabase.table("sales").select("*").eq("id", sale_id).execute()
-        sale_rows = getattr(sale_response, "data", None) or []
+        stage1 = _parallel(
+            [
+                ("sale", lambda: supabase.table("sales").select("*").eq("id", sale_id).execute()),
+                ("items", lambda: supabase.table("sale_items").select("*").eq("sale_id", sale_id).execute()),
+                ("products", lambda: supabase.table("products").select("id,name,sell_type,price,units_per_carton,kg_per_sack").execute()),
+                ("returns", lambda: supabase.table("returns").select("*").eq("sale_id", sale_id).order("created_at", desc=True).execute() if has_returns else type("R", (), {"data": []})()),
+            ]
+        )
+        sale_rows = getattr(stage1["sale"], "data", None) or []
         if not sale_rows:
             raise HTTPException(status_code=404, detail="الفاتورة غير موجودة")
         sale = sale_rows[0]
 
-        items_response = supabase.table("sale_items").select("*").eq("sale_id", sale_id).execute()
-        items_rows = getattr(items_response, "data", None) or []
+        items_rows = getattr(stage1["items"], "data", None) or []
+        products_map = {p["id"]: p for p in (getattr(stage1["products"], "data", None) or [])}
 
-        product_ids = {i.get("product_id") for i in items_rows if i.get("product_id") is not None}
-        products_response = supabase.table("products").select("id,name,sell_type,price,units_per_carton,kg_per_sack").execute()
-        products_map = {p["id"]: p for p in (getattr(products_response, "data", None) or [])}
-
-        returns_rows = []
+        returns_rows = getattr(stage1["returns"], "data", None) or [] if has_returns else []
         all_return_items = []
         returned_by_item: dict[int, float] = {}
-        if has_returns:
-            returns_response = supabase.table("returns").select("*").eq("sale_id", sale_id).order("created_at", desc=True).execute()
-            returns_rows = getattr(returns_response, "data", None) or []
-            ret_items_response = supabase.table("return_items").select("*").execute()
-            all_return_items = getattr(ret_items_response, "data", None) or []
-            returned_by_item = _load_return_by_item(supabase)
+        if has_returns and returns_rows:
+            return_ids = [r["id"] for r in returns_rows if r.get("id") is not None]
+            if return_ids:
+                ret_items_resp = (
+                    supabase.table("return_items")
+                    .select("*")
+                    .in_("return_id", return_ids)
+                    .execute()
+                )
+                all_return_items = getattr(ret_items_resp, "data", None) or []
+        for item in all_return_items:
+            item_id = item.get("sale_item_id")
+            if item_id is not None:
+                returned_by_item[item_id] = returned_by_item.get(item_id, 0.0) + float(item.get("base_qty") or 0)
 
         items_out = []
         for item in items_rows:

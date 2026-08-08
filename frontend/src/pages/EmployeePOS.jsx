@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ShoppingCart, User, CheckCircle, Plus, Minus, Search, AlertCircle, Image as ImageIcon, XCircle } from 'lucide-react';
 import { createSale, fetchProducts, resolveMediaUrl } from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import { unitLabel, unitDetailText, sellOptions, availabilityText, priceFor, lineSubtotal, stockStatusBadge } from '../utils/units';
+import { unitLabel, unitDetailText, sellOptions, availabilityText, priceFor, lineSubtotal, stockStatusBadge, containerCapacity, toBaseQty } from '../utils/units';
 import LowStockAlert from '../components/LowStockAlert';
 
 export default function EmployeePOS() {
@@ -41,9 +41,10 @@ export default function EmployeePOS() {
     }
   };
 
-  // Multi-unit products (carton/sack) open a unit picker; base-unit products add directly.
+  // Multi-unit products (carton/sack) and weight/liquid products (kg/liter,
+  // sold also in grams/ml) open a unit picker; piece products add directly.
   const handleProductClick = (product) => {
-    if (product.unit_type === 'carton' || product.unit_type === 'sack') {
+    if (product.unit_type !== 'piece') {
       setUnitModal({ product, unit: product.unit_type, qty: 1 });
     } else {
       addToCart(product);
@@ -69,7 +70,11 @@ export default function EmployeePOS() {
 
   const addFromModal = () => {
     const { product, unit, qty } = unitModal;
-    const capacity = unit === 'carton' ? (product.pieces_per_carton || 1) : unit === 'sack' ? (product.kg_per_sack || 1) : 1;
+    const capacity = containerCapacity(product, unit);
+    if (qty <= 0) {
+      setErrorMsg('الكمية يجب أن تكون أكبر من صفر');
+      return;
+    }
     if (qty * capacity > product.stock) {
       setErrorMsg('تنبيه: الكمية المطلوبة غير متوفرة بالكامل في المخزون!');
       return;
@@ -123,9 +128,7 @@ export default function EmployeePOS() {
       setProducts(prev => prev.map(p => {
         const line = sold.find(it => it.id === p.id);
         if (!line) return p;
-        const capacity = line.selling_unit === 'carton' ? (p.pieces_per_carton || 1)
-          : line.selling_unit === 'sack' ? (p.kg_per_sack || 1) : 1;
-        const base = Number(line.qty) * Number(capacity);
+        const base = toBaseQty(p, line.selling_unit, Number(line.qty));
         return {
           ...p,
           stock: Math.max(0, (p.stock ?? 0) - base),
@@ -298,13 +301,48 @@ export default function EmployeePOS() {
               ))}
             </div>
 
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-2">
               <h4 className="text-xs font-bold text-slate-500">الكمية:</h4>
               <div className="flex items-center gap-2">
-                <button onClick={() => setUnitModal(m => ({ ...m, qty: Math.max(1, m.qty - 1) }))} className="p-2 bg-slate-100 rounded-lg hover:bg-slate-200"><Minus size={14} /></button>
-                <span className="font-black w-8 text-center">{unitModal.qty}</span>
-                <button onClick={() => setUnitModal(m => ({ ...m, qty: m.qty + 1 }))} className="p-2 bg-slate-100 rounded-lg hover:bg-slate-200"><Plus size={14} /></button>
+                <button
+                  onClick={() => {
+                    const step = unitModal.unit === 'kg' || unitModal.unit === 'liter' ? 0.25 : 1;
+                    setUnitModal(m => ({ ...m, qty: Math.max(step, Math.round((m.qty - step) * 100) / 100) }));
+                  }}
+                  className="p-2 bg-slate-100 rounded-lg hover:bg-slate-200"
+                >
+                  <Minus size={14} />
+                </button>
+                <input
+                  type="number"
+                  min="0"
+                  step={unitModal.unit === 'kg' || unitModal.unit === 'liter' ? '0.01' : '1'}
+                  value={unitModal.qty}
+                  onChange={e => setUnitModal(m => ({ ...m, qty: parseFloat(e.target.value) || 0 }))}
+                  className="font-black w-20 text-center border rounded-xl py-1.5 outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  onClick={() => {
+                    const step = unitModal.unit === 'kg' || unitModal.unit === 'liter' ? 0.25 : 1;
+                    setUnitModal(m => ({ ...m, qty: Math.round((m.qty + step) * 100) / 100 }));
+                  }}
+                  className="p-2 bg-slate-100 rounded-lg hover:bg-slate-200"
+                >
+                  <Plus size={14} />
+                </button>
               </div>
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-slate-500 mb-4 bg-slate-50 rounded-xl p-2.5">
+              <span>
+                = {lineSubtotal(unitModal.product, unitModal.qty, unitModal.unit)} ج.م
+              </span>
+              <span>
+                {unitModal.unit === 'g' || unitModal.unit === 'ml'
+                  ? `${unitModal.qty} ${unitLabel(unitModal.unit)} ≈ ${toBaseQty(unitModal.product, unitModal.unit, unitModal.qty)} ${unitLabel(unitModal.product.unit_type)}`
+                  : null}
+                {' '}المتوفر: {availabilityText(unitModal.product)}
+              </span>
             </div>
 
             <button onClick={addFromModal} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl transition">

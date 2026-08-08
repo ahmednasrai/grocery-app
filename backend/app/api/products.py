@@ -105,8 +105,8 @@ class ProductCreate(BaseModel):
     price: float | None = None
     unit_price: float | None = None
     carton_price: float | None = None
-    stock: int | None = None
-    stock_qty: int | None = None
+    stock: float | None = None
+    stock_qty: float | None = None
     minimum_stock: int | None = None
     pieces_per_carton: int | None = None
     kg_per_sack: float | None = None
@@ -119,8 +119,8 @@ class ProductUpdate(BaseModel):
     price: float | None = None
     unit_price: float | None = None
     carton_price: float | None = None
-    stock: int | None = None
-    stock_qty: int | None = None
+    stock: float | None = None
+    stock_qty: float | None = None
     minimum_stock: int | None = None
     pieces_per_carton: int | None = None
     kg_per_sack: float | None = None
@@ -219,7 +219,7 @@ def _prepare_product_payload(payload):
     data["unit_price"] = price
 
     stock = data.get("stock") if data.get("stock") is not None else data.get("stock_qty")
-    stock = 0 if stock is None else int(stock)
+    stock = 0 if stock is None else float(stock)
     if stock < 0:
         raise HTTPException(status_code=422, detail="stock must be >= 0")
     data["stock"] = stock
@@ -272,7 +272,7 @@ def _prepare_update_payload(payload: ProductUpdate) -> dict:
 
     stock = data.get("stock") if data.get("stock") is not None else data.get("stock_qty")
     if stock is not None:
-        stock = int(stock)
+        stock = float(stock)
         if stock < 0:
             raise HTTPException(status_code=422, detail="stock must be >= 0")
         data["stock"] = stock
