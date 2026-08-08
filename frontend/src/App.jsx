@@ -1,12 +1,14 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import Navbar from './components/Navbar';
-import EmployeePOS from './pages/EmployeePOS';
-import AdminDash from './pages/AdminDash';
-import Inventory from './pages/Inventory';
-import Users from './pages/Users';
-import Login from './pages/Login';
 import { AuthProvider, useAuth } from './context/AuthContext';
+
+// Lazy-loaded pages: يتم تحميل كل صفحة فقط عند فتحها (chunk أصغر للتحميل الأولي)
+const EmployeePOS = lazy(() => import('./pages/EmployeePOS'));
+const AdminDash = lazy(() => import('./pages/AdminDash'));
+const Inventory = lazy(() => import('./pages/Inventory'));
+const Users = lazy(() => import('./pages/Users'));
+const Login = lazy(() => import('./pages/Login'));
 
 function LoadingScreen() {
   return (
@@ -49,7 +51,8 @@ function AppShell() {
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans" dir="rtl">
       {!hideNavbar && <Navbar />}
       <main>
-        <Routes>
+        <Suspense fallback={<LoadingScreen />}>
+          <Routes>
           <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
           <Route path="/pos" element={<RequireAuth><RequirePermission permission="pos"><EmployeePOS /></RequirePermission></RequireAuth>} />
           <Route path="/inventory" element={<RequireAuth><RequirePermission permission="inventory"><Inventory /></RequirePermission></RequireAuth>} />
@@ -58,6 +61,7 @@ function AppShell() {
           <Route path="/" element={loading ? <LoadingScreen /> : <Navigate to={profile ? homePath(profile) : '/login'} replace />} />
           <Route path="*" element={loading ? <LoadingScreen /> : <Navigate to={profile ? homePath(profile) : '/login'} replace />} />
         </Routes>
+        </Suspense>
       </main>
     </div>
   );

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ShoppingCart, User, CheckCircle, Plus, Minus, Search, AlertCircle, Image as ImageIcon, XCircle } from 'lucide-react';
 import { createSale, fetchProducts, resolveMediaUrl } from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import { unitLabel, unitDetailText, sellOptions, availabilityText, priceFor, lineSubtotal } from '../utils/units';
+import { unitLabel, unitDetailText, sellOptions, availabilityText, priceFor, lineSubtotal, stockStatusBadge } from '../utils/units';
 
 export default function EmployeePOS() {
   const { profile } = useAuth();
@@ -117,7 +117,20 @@ export default function EmployeePOS() {
       setCart([]);
       setSuccess(true);
       checkoutKeyRef.current = null;
-      loadProducts();
+      // تحديث محلي للمخزون بدلاً من إعادة جلب القائمة كاملة — بدون انتظار الشبكة
+      const sold = sale?.items || [];
+      setProducts(prev => prev.map(p => {
+        const line = sold.find(it => it.id === p.id);
+        if (!line) return p;
+        const capacity = line.selling_unit === 'carton' ? (p.pieces_per_carton || 1)
+          : line.selling_unit === 'sack' ? (p.kg_per_sack || 1) : 1;
+        const base = Number(line.qty) * Number(capacity);
+        return {
+          ...p,
+          stock: Math.max(0, (p.stock ?? 0) - base),
+          stock_qty: Math.max(0, (p.stock_qty ?? p.stock ?? 0) - base),
+        };
+      }));
       setTimeout(() => setSuccess(false), 3000);
     } catch (error) {
       console.error(error);
@@ -129,7 +142,7 @@ export default function EmployeePOS() {
     }
   };
 
-  const filteredProducts = products.filter(p => p.name.includes(search));
+  const filteredProducts = products.filter(p => (p.is_active !== false) && p.name.includes(search));
 
   return (
     <div className="p-3 sm:p-4 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-[1.2fr_0.8fr] gap-4 sm:gap-6 font-sans text-right dir-rtl">
@@ -177,7 +190,7 @@ export default function EmployeePOS() {
               className="p-3 sm:p-4 bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-md cursor-pointer transition flex flex-col justify-between min-h-[150px]"
             >
               {p.image_url ? (
-                <img src={resolveMediaUrl(p.image_url)} alt={p.name} className="w-full h-20 object-cover rounded-xl mb-2" />
+                <img src={resolveMediaUrl(p.image_url)} alt={p.name} loading="lazy" className="w-full h-20 object-cover rounded-xl mb-2" />
               ) : (
                 <div className="w-full h-20 mb-2 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 flex items-center justify-center">
                   <ImageIcon size={26} className="text-slate-300" />
@@ -188,9 +201,14 @@ export default function EmployeePOS() {
                 {unitDetailText(p) && (
                   <p className="text-xs text-slate-400 mt-0.5">{unitDetailText(p)}</p>
                 )}
-                <p className={`text-xs mt-1 ${p.stock < 10 ? 'text-red-500 font-bold' : 'text-slate-400'}`}>
+                <p className={`text-xs mt-1 ${p.stock_status === 'out' ? 'text-red-600 font-black' : p.stock_status === 'low' ? 'text-amber-500 font-bold' : 'text-slate-400'}`}>
                   المتاح: {availabilityText(p)}
                 </p>
+                {(p.stock_status === 'low' || p.stock_status === 'out') && (
+                  <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-black ${p.stock_status === 'out' ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'}`}>
+                    {stockStatusBadge(p.stock_status)}
+                  </span>
+                )}
               </div>
               <p className="text-base font-black text-blue-600 mt-2">
                 {p.price} ج.م / {unitLabel(p.unit_type)}

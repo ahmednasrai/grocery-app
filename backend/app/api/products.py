@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 
@@ -49,6 +50,10 @@ def _normalize_product(row):
     product["stock"] = product.get("stock") if product.get("stock") is not None else 0
     product["stock_qty"] = product.get("stock_qty") if product.get("stock_qty") is not None else product["stock"]
 
+    product["minimum_stock"] = int(product.get("minimum_stock") or 0)
+
+    product["is_active"] = bool(product.get("is_active", True))
+
     unit_type = (product.get("sell_type") or "piece").strip().lower()
     if unit_type not in UNIT_TYPES:
         unit_type = "piece"
@@ -68,19 +73,28 @@ def _normalize_product(row):
 
     base_price = float(product.get("price") or 0)
 
-    # Derived container prices, always from the stored base price:
-    #   carton: price per box   = base price x pieces per box
-    #   sack:   price per sack  = base price x kg per sack
-    # The optional carton_price column is honored only when explicitly > 0.
+    # Derived container prices, ALWAYS from the stored base price:
+    #   carton: price per box = base price x pieces per box
+    #   sack:   price per sack = base price x kg per sack
+    # (single source of truth for pricing; container price follows the base price)
     if unit_type == "carton" and product.get("pieces_per_carton"):
-        stored_carton = product.get("carton_price")
-        product["carton_price"] = (
-            float(stored_carton)
-            if stored_carton is not None and float(stored_carton) > 0
-            else round(base_price * product["pieces_per_carton"], 2)
-        )
+        product["carton_price"] = round(base_price * product["pieces_per_carton"], 2)
     elif unit_type == "sack" and product.get("kg_per_sack"):
         product["sack_price"] = round(base_price * product["kg_per_sack"], 2)
+
+    # Stock status in BASE units (same rule everywhere: Dashboard / POS / Inventory)
+    #   stock <= 0            -> out  (نفد المخزون)
+    #   0 < stock <= minimum  -> low  (المخزون منخفض)
+    #   otherwise             -> ok
+    base_stock = float(product.get("stock") or 0)
+    minimum = float(product.get("minimum_stock") or 0)
+    if base_stock <= 0:
+        status = "out"
+    elif minimum > 0 and base_stock <= minimum:
+        status = "low"
+    else:
+        status = "ok"
+    product["stock_status"] = status
 
     return product
 
@@ -93,6 +107,7 @@ class ProductCreate(BaseModel):
     carton_price: float | None = None
     stock: int | None = None
     stock_qty: int | None = None
+    minimum_stock: int | None = None
     pieces_per_carton: int | None = None
     kg_per_sack: float | None = None
     image_url: str | None = None
@@ -106,15 +121,57 @@ class ProductUpdate(BaseModel):
     carton_price: float | None = None
     stock: int | None = None
     stock_qty: int | None = None
+    minimum_stock: int | None = None
     pieces_per_carton: int | None = None
     kg_per_sack: float | None = None
     image_url: str | None = None
+    is_active: bool | None = None
+
+
+class ReceiveStockRequest(BaseModel):
+    qty: float = Field(gt=0)
+    unit: str | None = None
+
+
+class AdjustStockRequest(BaseModel):
+    operation: str  # add | subtract | set
+    qty: float = Field(ge=0)
+    unit: str | None = None
 
 
 def _model_dump(model):
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_none=True)
     return model.dict(exclude_none=True)
+
+
+def _rpc_message(exc: Exception) -> str:
+    """Pull the RPC error message out of the error raised by the pg client."""
+    text = str(exc)
+    for start_char in ("[", "{"):
+        try:
+            start = text.find(start_char)
+            if start == -1:
+                continue
+            end = text.rfind("]" if start_char == "[" else "}") + 1
+            payload = json.loads(text[start:end])
+            if isinstance(payload, list) and payload:
+                payload = payload[0]
+            if isinstance(payload, dict):
+                msg = payload.get("message") or payload.get("detail")
+                if msg:
+                    return str(msg)
+        except (ValueError, TypeError):
+            continue
+    return text
+
+
+def _rpc_parts(message: str):
+    """'product_not_found:<id>' -> ('product_not_found', '<id>')"""
+    if ":" in message:
+        kind, _, rest = message.partition(":")
+        return kind, rest
+    return message, None
 
 
 def _validate_unit_fields(unit_type: str, pieces_per_carton, kg_per_sack):
@@ -168,6 +225,15 @@ def _prepare_product_payload(payload):
     data["stock"] = stock
     data["stock_qty"] = stock
 
+    minimum_stock = data.get("minimum_stock")
+    if minimum_stock is None:
+        minimum_stock = 10  # default alert threshold (base units); mirrors DB column default
+    else:
+        minimum_stock = int(minimum_stock)
+        if minimum_stock < 0:
+            raise HTTPException(status_code=422, detail="minimum_stock must be >= 0")
+    data["minimum_stock"] = minimum_stock
+
     data["sell_type"] = unit_type
     data["units_per_carton"] = pieces if pieces is not None else None
     data["kg_per_sack"] = kg if kg is not None else None
@@ -212,6 +278,12 @@ def _prepare_update_payload(payload: ProductUpdate) -> dict:
         data["stock"] = stock
         data["stock_qty"] = stock
 
+    if "minimum_stock" in data:
+        minimum_stock = int(data["minimum_stock"])
+        if minimum_stock < 0:
+            raise HTTPException(status_code=422, detail="minimum_stock must be >= 0")
+        data["minimum_stock"] = minimum_stock
+
     unit_cols = {}
     if "sell_type" in data:
         unit_cols["units_per_carton"] = data.pop("units_per_carton", None)
@@ -231,7 +303,18 @@ def list_products(_profile: dict = Depends(get_current_profile)):
     try:
         response = supabase.table("products").select("*").execute()
         rows = getattr(response, "data", None) or []
-        return [_normalize_product(row) for row in rows]
+
+        sold_response = supabase.table("sale_items").select("product_id").execute()
+        sold_product_ids = {r.get("product_id") for r in (getattr(sold_response, "data", None) or [])}
+
+        products = []
+        for row in rows:
+            product = _normalize_product(row)
+            base_stock = float(product.get("stock") or 0)
+            product["capacity_locked"] = base_stock > 0 or product.get("id") in sold_product_ids
+            product["has_sales"] = product.get("id") in sold_product_ids
+            products.append(product)
+        return products
     except Exception as exc:
         logger.exception("Error fetching products")
         raise HTTPException(status_code=500, detail="Unable to fetch products") from exc
@@ -267,6 +350,32 @@ def update_product(
     supabase = get_supabase_client()
     pid = int(product_id)
     update_data = _prepare_update_payload(payload)
+
+    capacity_keys = ("sell_type", "units_per_carton", "kg_per_sack")
+    if any(k in update_data for k in capacity_keys):
+        located = _fetch_product(supabase, pid)
+        if located is None:
+            raise HTTPException(status_code=404, detail=f"Product #{pid} not found")
+        current_sell = located.get("sell_type") or "piece"
+        current_capacity = (
+            located.get("units_per_carton")
+            if current_sell == "carton"
+            else located.get("kg_per_sack") if current_sell == "sack" else None
+        )
+        new_sell = update_data.get("sell_type", current_sell)
+        new_capacity = (
+            update_data.get("units_per_carton") if new_sell == "carton"
+            else update_data.get("kg_per_sack") if new_sell == "sack" else None
+        )
+        if (new_sell != current_sell) or (new_capacity is not None and new_capacity != current_capacity):
+            has_stock = (located.get("stock_qty") if located.get("stock_qty") is not None else located.get("stock") or 0) > 0
+            has_sales = _product_has_sales(supabase, pid)
+            if has_stock or has_sales:
+                raise HTTPException(
+                    status_code=409,
+                    detail="لا يمكن تغيير سعة الكرتونة/الشكارة لمنتج لديه مخزون أو مبيعات سابقة.",
+                )
+
     try:
         response = supabase.table("products").update(update_data).eq("id", pid).execute()
         rows = getattr(response, "data", None) or []
@@ -281,6 +390,85 @@ def update_product(
             status_code=500,
             detail=f"Unable to update product #{pid}: {str(exc)}",
         ) from exc
+
+
+def _fetch_product(supabase, pid: int):
+    response = supabase.table("products").select("*").eq("id", pid).execute()
+    rows = getattr(response, "data", None) or []
+    return rows[0] if rows else None
+
+
+def _product_has_sales(supabase, pid: int) -> bool:
+    response = supabase.table("sale_items").select("id").eq("product_id", pid).execute()
+    rows = getattr(response, "data", None) or []
+    return bool(rows)
+
+
+def _map_stock_error(exc: Exception):
+    """Map RPC stock-movement errors to proper HTTP responses."""
+    message = _rpc_message(exc)
+    logger.warning("Stock RPC failed: %s", (message or str(exc))[:300])
+    if not message:
+        return HTTPException(status_code=500, detail="فشلت عملية المخزون")
+    kind, _rest = _rpc_parts(message)
+    if kind == "product_not_found":
+        return HTTPException(status_code=404, detail="منتج غير موجود")
+    if kind == "invalid_unit":
+        return HTTPException(status_code=400, detail="وحدة القياس غير صحيحة لهذا المنتج")
+    if kind == "invalid_quantity":
+        return HTTPException(status_code=400, detail="الكمية غير صحيحة")
+    if kind == "invalid_operation":
+        return HTTPException(status_code=400, detail="عملية غير صحيحة")
+    if kind == "negative_stock_not_allowed":
+        return HTTPException(status_code=409, detail="لا يمكن أن يصبح المخزون سالبًا")
+    return HTTPException(status_code=500, detail="فشل تنفيذ عملية المخزون")
+
+
+@router.post("/api/products/{product_id}/receive-stock")
+def receive_stock(
+    product_id: int,
+    payload: ReceiveStockRequest,
+    _profile: dict = Depends(require_permission("inventory")),
+):
+    """Add stock (توريد) in any allowed selling unit; backend (DB RPC) converts to base units atomically."""
+    supabase = get_supabase_client()
+    pid = int(product_id)
+    try:
+        result = supabase.rpc(
+            "receive_stock",
+            {"p_product_id": pid, "p_qty": payload.qty, "p_unit": payload.unit},
+        )
+    except Exception as exc:
+        raise _map_stock_error(exc) from exc
+    if isinstance(result, dict) and result.get("id") is not None:
+        return _normalize_product(result)
+    raise HTTPException(status_code=500, detail="فشل عملية التوريد")
+
+
+@router.post("/api/products/{product_id}/adjust-stock")
+def adjust_stock(
+    product_id: int,
+    payload: AdjustStockRequest,
+    _profile: dict = Depends(require_permission("inventory")),
+):
+    """add / subtract / set stock. 'set' is absolute (base units). Never negative."""
+    supabase = get_supabase_client()
+    pid = int(product_id)
+    try:
+        result = supabase.rpc(
+            "adjust_stock",
+            {
+                "p_product_id": pid,
+                "p_operation": payload.operation,
+                "p_qty": payload.qty,
+                "p_unit": payload.unit,
+            },
+        )
+    except Exception as exc:
+        raise _map_stock_error(exc) from exc
+    if isinstance(result, dict) and result.get("id") is not None:
+        return _normalize_product(result)
+    raise HTTPException(status_code=500, detail="فشل تعديل المخزون")
 
 
 @router.post("/api/products/upload-image")
@@ -316,8 +504,20 @@ def delete_product(
     supabase = get_supabase_client()
     pid = int(product_id)
     try:
+        located = _fetch_product(supabase, pid)
+        if located is None:
+            raise HTTPException(status_code=404, detail="منتج غير موجود")
+
+        if _product_has_sales(supabase, pid):
+            raise HTTPException(
+                status_code=409,
+                detail="لا يمكن حذف هذا المنتج لأنه له مبيعات مسجلة سابقًا. يمكنك أرشفته (إخفاؤه) بدلاً من ذلك.",
+            )
+
         supabase.table("products").delete().eq("id", pid).execute()
         return {"deleted": True, "id": pid}
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Delete failed for product %s", pid)
         raise HTTPException(

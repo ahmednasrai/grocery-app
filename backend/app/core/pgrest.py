@@ -24,6 +24,7 @@ class _Table:
         self._payload = None
         self._filters = {}
         self._orders = []
+        self._limit = None
 
     def select(self, *cols):
         self._verb = "select"
@@ -58,6 +59,10 @@ class _Table:
         self._orders = existing
         return self
 
+    def limit(self, count):
+        self._limit = count
+        return self
+
     def execute(self):
         url = f"{self._base}/{self._name}"
         headers = {
@@ -80,6 +85,9 @@ class _Table:
             params["order"] = ",".join(
                 f"{col}.{dir_}" for col, dir_ in self._orders
             )
+
+        if self._limit is not None:
+            params["limit"] = self._limit
 
         method = {
             "select": "GET",

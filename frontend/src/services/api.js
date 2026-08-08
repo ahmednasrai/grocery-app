@@ -88,9 +88,57 @@ export async function deleteProduct(productId) {
   })
 }
 
-export async function fetchSales() {
-  const data = await request('/api/sales')
+export async function fetchSales({ from, to } = {}) {
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
+  const qs = params.toString()
+  const data = await request(`/api/sales${qs ? `?${qs}` : ''}`)
   return Array.isArray(data) ? data : (data?.data || [])
+}
+
+export async function fetchSaleDetail(saleId) {
+  const data = await request(`/api/sales/${saleId}`)
+  return data
+}
+
+export async function createSaleReturn(saleId, payload) {
+  return request(`/api/sales/${saleId}/return`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function receiveStock(productId, { qty, unit }) {
+  return request(`/api/products/${productId}/receive-stock`, {
+    method: 'POST',
+    body: JSON.stringify({ qty, unit }),
+  })
+}
+
+export async function adjustStock(productId, { operation, qty, unit }) {
+  return request(`/api/products/${productId}/adjust-stock`, {
+    method: 'POST',
+    body: JSON.stringify({ operation, qty, unit }),
+  })
+}
+
+export async function fetchEmployeeSalesSummary({ from, to } = {}) {
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
+  const qs = params.toString()
+  const data = await request(`/api/sales/employee-summary${qs ? `?${qs}` : ''}`)
+  return data || { total_amount: 0, invoice_count: 0, units_sold: 0, employees: [] }
+}
+
+export async function fetchEmployeeSalesDetail(employeeName, { from, to } = {}) {
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
+  const qs = params.toString()
+  const data = await request(`/api/sales/employees/${encodeURIComponent(employeeName)}${qs ? `?${qs}` : ''}`)
+  return data
 }
 
 export async function createSale(salePayload) {

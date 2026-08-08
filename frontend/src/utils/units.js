@@ -117,3 +117,30 @@ export function availabilityText(product) {
 export function lineSubtotal(product, qty, sellingUnit) {
   return Math.round(qty * priceFor(product, sellingUnit) * 100) / 100;
 }
+
+// ---- Stock status (single rule shared by POS / Inventory / Dashboard) ----
+// stock_status comes computed from the Backend (base-unit comparison vs
+// minimum_stock). The labels below are presentation only.
+
+export function baseUnitLabel(unitType) {
+  if (unitType === 'carton') return UNIT_LABELS.piece;
+  if (unitType === 'sack') return UNIT_LABELS.kg;
+  return UNIT_LABELS[unitType] || UNIT_LABELS.piece;
+}
+
+export function stockStatusLabel(status) {
+  if (status === 'out') return 'نفد المخزون';
+  if (status === 'low') return 'المخزون منخفض';
+  return 'متوفر';
+}
+
+export function stockStatusTone(status) {
+  if (status === 'out') return 'bg-red-100 text-red-600';
+  if (status === 'low') return 'bg-amber-100 text-amber-600';
+  return 'bg-green-100 text-green-600';
+}
+
+export function stockStatusBadge(status) {
+  const icon = status === 'out' ? '🔴' : status === 'low' ? '⚠' : '✔';
+  return `${icon} ${stockStatusLabel(status)}`;
+}
